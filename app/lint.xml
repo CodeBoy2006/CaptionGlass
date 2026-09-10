@@ -4,4 +4,6 @@
     <issue id="AndroidGradlePluginVersion" severity="informational" />
     <issue id="GradleDependency" severity="informational" />
     <issue id="NewerVersionAvailable" severity="informational" />
+    <!-- M0 targets API 36, within AGP 8.13's supported range; evaluate newer SDKs together. -->
+    <issue id="OldTargetApi" severity="informational" />
 </lint>
