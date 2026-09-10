@@ -1,6 +1,4 @@
 <resources>
     <string name="app_name">CaptionGlass</string>
-    <string name="capture_channel">音频捕获诊断</string>
-    <string name="capture_notification">正在检查播放音频 · 不保存音频</string>
-    <string name="stop_capture">停止检查</string>
+    <string name="subtitle_page">字幕 %1$d/%2$d · 拖动 / 切换穿透</string>
 </resources>

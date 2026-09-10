@@ -2,54 +2,59 @@
 
 本地优先的 Android 跨应用双语字幕层。让原文及时出现，让译文稳定成句，让连续观看时的字幕仍然跟得上。
 
-**当前为 M0 开发骨架，尚不能识别或翻译真实音频。** 应用可运行固定文本字幕预览，并提供独立的播放音频捕获诊断。没有下载模型、没有假装成功的推理实现、没有网络权限；原始音频不落盘。
+**M1 已接入真实的单路中英识别与翻译。** X-ASR + Hy-MT2 在手机 CPU 上运行，支持播放音频捕获、双语悬浮窗与离线语言包导入。应用没有网络权限，不保存原始音频。当前是 arm64 手机实验版本；短样本验证不代表准确率、所有机型或长时性能已达标。
 
 ## 构建与运行
 
-需要 JDK 17、Android SDK Platform 36、Build Tools 35.0.0。使用 Android Studio 打开项目，或配置 `JAVA_HOME`、`ANDROID_HOME`（也可在不入库的 `local.properties` 设置 `sdk.dir`）。首次构建需要联网获取 Gradle/Maven 依赖，与应用运行时离线无关。
+需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1。使用 checked-in Gradle wrapper。首次构建下载的 native 源码与运行库都固定 SHA-256；权重与构建产物不入 Git。
 
 ```sh
+sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+bash scripts/prepare-native.sh
 ./gradlew :engine:check :app:assembleDebug :app:lintDebug
 adb -s <测试设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-macOS Homebrew JDK 示例：
+macOS 可设置 `JAVA_HOME="$(brew --prefix openjdk@17)"`、`ANDROID_HOME="$HOME/Library/Android/sdk"`。也可用不入库的 `local.properties` 配置 SDK。最低 Android 10 / API 29，compile/target API 36；M1 仅打包 arm64-v8a。Gradle 8.13、AGP 8.13.2、Kotlin 2.2.21、Compose BOM 2025.12.00 固定版本。
+
+## 准备语言包
 
 ```sh
-export JAVA_HOME="$(brew --prefix openjdk@17)"
-export ANDROID_HOME="$HOME/Library/Android/sdk"
-./gradlew :engine:check :app:assembleDebug :app:lintDebug
+./gradlew downloadModels
 ```
 
-最低 Android 10 / API 29，compile/target API 36。Gradle 8.13、AGP 8.13.2、Kotlin 2.2.21 与 Compose BOM 2025.12.00 均固定版本。Wrapper jar 和 Gradle 发行包使用官方 SHA-256 验证；[AGP 兼容性](https://developer.android.com/build/releases/agp-8-13-0-release-notes) 说明该版本使用 Gradle 8.13/JDK 17。
+该开发任务从不可变 revision 下载并校验五个文件到 `artifacts/models/`，总计 1,747,677,166 字节。将这个文件夹复制到手机可由系统文件选择器访问的位置，在应用的“设置 → 导入 / 替换语言包”选择它。文件夹应直接包含三个 `*-480ms.onnx`、`tokens.txt` 与 `Hy-MT2-1.8B-Q4_K_M.gguf`。安装会校验文件大小与 SHA-256，并保留旧包直到新包完整就绪。替换已有语言包时需要额外暂存空间。
 
-应用内：
+选择“英 → 中”或“中 → 英”，点击“开启字幕”，按系统提示允许音频、悬浮窗和本次捕获。捕获时选择整个屏幕，再切换到允许音频捕获的播放器。拖动字幕把手改变位置，点击把手切换触摸穿透。通过应用或前台通知停止；回收完成后才能重新开始。
 
-1. **字幕**：选中英方向并预览。固定文本通过真实的稳定门槛、翻译任务队列和阅读调度；译文本身来自固定样本。
-2. **记录**：查看本次演示的内存记录。停止时保留未译完的已确认内容；重新预览会清空，进程结束不持久化。
-3. **设置**：查看当前能力，主动开始音频诊断后再请求权限。切换到播放应用检查信号，使用通知或返回应用停止。静音不证明 DRM。
+目标应用可能禁止捕获；静音不证明 DRM。字幕记录只在内存保留最近 200 条，开启新会话会清空。失败、超时、积压和源修订都有明确状态，不隐式转云端。
 
-不会操作任意播放器、永久保留系统授权或绕过目标应用的捕获限制。当前没有跨应用悬浮窗，预览显示在应用内部。
+## 真机验收
+
+核心检查不需要模型或设备。真实推理检查使用另外的测试 APK，包含 macOS 合成语音，没有用户媒体；不能将它当成广泛准确率基准。
+
+```sh
+bash scripts/prepare-fixtures.sh  # macOS say + ffmpeg
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+bash scripts/device-check.sh <已明确选择且解锁的测试设备序列号>
+```
+
+脚本会安装两个调试 APK、向应用私有目录部署约 1.8 GB 权重与合成音频，并运行双向翻译、1× 语速回放、取消/停止、输出预算、48 kHz 重采样与尾部冲刷检查。厂商系统可能逐次要求确认 USB 安装；验收页面会保持亮屏，结束后解除。跨应用捕获和悬浮窗还需要系统授权后的实际 UI 验收，步骤与实测结果见 [验收文档](docs/validation.md)。
 
 ## 工程地图
 
 ```text
-app/                         Compose 页面、回放 ViewModel、播放捕获诊断服务
-engine/                      无 Android 依赖的提交/队列/阅读规则与回归检查
-native/                      sherpa-onnx 与 llama.cpp 的 Android 接入边界
-models/candidates.json       不可安装的候选模型清单，固定 revision/size/SHA-256
-PRODUCT.md                   产品理解、边界与未验证假设
-docs/architecture.md         数据流、所有权、取消、时间与模型接入约束
-docs/validation.md           M0–M3 顺序与验收标准
-.github/workflows/android.yml 构建、核心回归、lint、debug APK artifact
+app/                 Compose、采集服务、会话 owner、原生悬浮窗、SAF 导入
+engine/              纯 Kotlin 原文/队列/阅读规则与可执行回归检查
+native/              固定 sherpa JNI + llama.cpp CPU 绑定
+models/zh-en.json    M1 实验性语言包：revision / size / SHA-256 / runtime
+scripts/             native 准备、合成音频和真机验收
+third_party/         依赖许可与说明
+PRODUCT.md           产品边界与阶段
+docs/architecture.md 实际数据流、所有权、取消、时钟与接入约束
+docs/validation.md   验收步骤、实测记录和后续门槛
 ```
 
-先读 [产品定义](PRODUCT.md)，再读 [架构](docs/architecture.md) 和 [验收计划](docs/validation.md)。当前基线候选是 X-ASR 中英 480 ms + Hy-MT2-1.8B Q4_K_M；尚未验证完整的模型/原生运行库/手机组合。
+先读 [产品定义](PRODUCT.md) 与 [架构](docs/architecture.md)。保持单路识别、单路翻译、有界队列，确认片段必须得到终态。提交前运行构建与核心检查，不提交 SDK 路径、密钥、权重、音频、APK 或本地 `statusquo.md`。
 
-## 贡献约定
-
-变更应保持单路识别、单路翻译、有界队列；已确认内容不能静默丢弃，异步结果必须验证完整身份。注释使用清晰英文，面向产品的文案不暴露推理参数。
-
-核心逻辑至少补充一个能失败的回归检查；提交前运行上面的验证命令。不要提交 SDK 路径、密钥、模型权重、用户音频或签名文件。`statusquo.md` 是本地工作日志，必须保持忽略。原生库、模型包、持久化和悬浮窗按真实接入需要逐项加入，不提前引入多后端框架。
-
-项目目前为私有开发仓库，尚未选择对外分发的软件许可证。模型和未来集成的原生依赖各自遵循其许可证；候选清单中的许可标识不替代发布前的完整许可文件检查。
+项目目前为私有开发仓库，尚未选择公开分发的软件许可证。组件遵循各自许可证；公开分发前需完成传递依赖审计。M2 再做持久记录、回看/导出、完整下载管理和长时多机型验收。

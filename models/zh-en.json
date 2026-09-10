@@ -1,16 +1,18 @@
 {
   "schemaVersion": 1,
   "verifiedMetadataAt": "2026-09-10",
-  "candidates": [
+  "models": [
     {
       "id": "x-asr-zh-en-480ms",
-      "installable": false,
-      "validation": "metadata-only; runtime and device qualification pending",
+      "installable": true,
+      "validation": "M1 experimental arm64 CPU; synthetic zh/en inference verified on vivo V2415A API 36; broad accuracy and endurance qualification pending",
       "source": "https://huggingface.co/GilgameshWind/X-ASR-zh-en",
       "revision": "689ff18c584d29910da37b6fe904db0c1489c9d1",
       "runtime": {
         "name": "sherpa-onnx",
-        "revision": null
+        "revision": "11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf",
+        "version": "1.13.8",
+        "onnxruntimeVersion": "1.28.2"
       },
       "license": "Apache-2.0",
       "intendedLanguages": [
@@ -46,13 +48,14 @@
     },
     {
       "id": "hy-mt2-1.8b-q4-k-m",
-      "installable": false,
-      "validation": "metadata-only; runtime and device qualification pending",
+      "installable": true,
+      "validation": "M1 experimental arm64 CPU; synthetic zh/en inference and cancellation verified on vivo V2415A API 36; broad accuracy and endurance qualification pending",
       "source": "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF",
       "revision": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
       "runtime": {
         "name": "llama.cpp",
-        "revision": null
+        "revision": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
+        "version": "0.4.0"
       },
       "license": "Apache-2.0",
       "intendedLanguages": [

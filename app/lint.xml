@@ -4,6 +4,8 @@
     <issue id="AndroidGradlePluginVersion" severity="informational" />
     <issue id="GradleDependency" severity="informational" />
     <issue id="NewerVersionAvailable" severity="informational" />
-    <!-- M0 targets API 36, within AGP 8.13's supported range; evaluate newer SDKs together. -->
+    <!-- API 36 is within AGP 8.13's supported range; evaluate newer SDKs together. -->
     <issue id="OldTargetApi" severity="informational" />
+    <!-- M1 explicitly supports arm64 Android phones only, not ChromeOS. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
 </lint>

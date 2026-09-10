@@ -15,7 +15,7 @@ data class Segment(val key: SegmentKey, val source: String, val startMs: Long, v
     }
 }
 
-enum class UntranslatedReason { BACKLOG, FAILED, TIMED_OUT, STOPPED }
+enum class UntranslatedReason { BACKLOG, FAILED, TIMED_OUT, STOPPED, SUPERSEDED }
 
 data class Caption(
     val segment: Segment,
