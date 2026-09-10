@@ -1,0 +1,17 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+/statusquo.md
+*.jks
+*.keystore
+.env
+.env.*
+*.onnx
+*.gguf
+*.wav
+*.pcm
+/artifacts/
