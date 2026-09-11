@@ -1,8 +1,10 @@
 #include <jni.h>
 #include <android/log.h>
 #include <llama.h>
+#include <ggml-backend.h>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -10,6 +12,7 @@
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
+static constexpr int batch_size = 8;
 struct Call {
     std::atomic<bool> cancelled{false};
     Clock::time_point deadline;
@@ -21,10 +24,19 @@ static bool aborted(void * data) {
 }
 static void check(Call * c) { if (aborted(c)) throw std::runtime_error("cancelled_or_deadline"); }
 struct Model {
+    bool usable = true;
+    double clear_ms = 0;
+    ggml_backend_dev_t devices[2]{};
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
     ~Model() { if (ctx) llama_free(ctx); if (model) llama_model_free(model); }
 };
+static void decode(Model * m, llama_batch batch, Call * call) {
+    const auto status = llama_decode(m->ctx, batch);
+    llama_synchronize(m->ctx);
+    check(call);
+    if (status != 0) throw std::runtime_error("decode_failed");
+}
 static std::string bytes(JNIEnv * env, jbyteArray input) {
     std::string s(env->GetArrayLength(input), '\0');
     env->GetByteArrayRegion(input, 0, static_cast<jsize>(s.size()), reinterpret_cast<jbyte *>(s.data()));
@@ -42,6 +54,13 @@ extern "C" JNIEXPORT void JNICALL JNI(cancel)(JNIEnv *, jobject, jlong c) {
 }
 extern "C" JNIEXPORT void JNICALL JNI(freeCall)(JNIEnv *, jobject, jlong c) { delete reinterpret_cast<Call *>(c); }
 extern "C" JNIEXPORT void JNICALL JNI(unload)(JNIEnv *, jobject, jlong m) { delete reinterpret_cast<Model *>(m); }
+extern "C" JNIEXPORT jstring JNICALL JNI(timings)(JNIEnv * env, jobject, jlong model) {
+    auto * m = reinterpret_cast<Model *>(model);
+    const auto perf = llama_perf_context(m->ctx);
+    const auto text = "prefill_ms=" + std::to_string(perf.t_p_eval_ms) + " decode_ms=" +
+        std::to_string(perf.t_eval_ms) + " clear_ms=" + std::to_string(m->clear_ms);
+    return env->NewStringUTF(text.c_str()); // ASCII-only diagnostic numbers.
+}
 extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray path, jlong token) {
     try {
         auto * call = reinterpret_cast<Call *>(token);
@@ -49,14 +68,23 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
         static std::once_flag once;
         std::call_once(once, [] {
             llama_log_set([](ggml_log_level level, const char * text, void *) {
-                if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN)
-                    __android_log_print(ANDROID_LOG_WARN, "CaptionGlassNative", "%s", text);
+                if (level == GGML_LOG_LEVEL_INFO || level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN)
+                    __android_log_print(level == GGML_LOG_LEVEL_INFO ? ANDROID_LOG_INFO : ANDROID_LOG_WARN,
+                                        "CaptionGlassNative", "%s", text);
             }, nullptr);
             llama_backend_init();
         });
         auto m = std::make_unique<Model>();
+        auto vulkan = ggml_backend_reg_by_name("Vulkan");
+        if (!vulkan || ggml_backend_reg_dev_count(vulkan) == 0)
+            throw std::runtime_error("vulkan_device_unavailable");
+        m->devices[0] = ggml_backend_reg_dev_get(vulkan, 0);
+        __android_log_print(ANDROID_LOG_INFO, "CaptionGlassNative", "MT device: %s (%s)",
+                            ggml_backend_dev_name(m->devices[0]), ggml_backend_dev_description(m->devices[0]));
         auto mp = llama_model_default_params();
-        mp.n_gpu_layers = 0;
+        mp.devices = m->devices;
+        mp.n_gpu_layers = INT_MAX;
+        mp.split_mode = LLAMA_SPLIT_MODE_NONE;
         mp.load_mode = LLAMA_LOAD_MODE_MMAP;
         mp.progress_callback = [](float, void * c) { return !aborted(c); };
         mp.progress_callback_user_data = call;
@@ -64,9 +92,12 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
         if (!m->model) throw std::runtime_error("model_load_failed");
         check(call);
         auto cp = llama_context_default_params();
-        cp.n_ctx = 2048; cp.n_batch = 256; cp.n_ubatch = 64;
+        // Small batches use Vulkan's vector kernels for short mobile prompts.
+        // ponytail: poll between GPU batches; in-flight GPU work cannot be preempted.
+        cp.n_ctx = 2048; cp.n_batch = batch_size; cp.n_ubatch = batch_size;
         cp.n_threads = 3; cp.n_threads_batch = 3;
-        cp.offload_kqv = false; cp.op_offload = false;
+        cp.offload_kqv = true; cp.op_offload = true;
+        cp.no_perf = false;
         cp.abort_callback = aborted; cp.abort_callback_data = call;
         m->ctx = llama_init_from_model(m->model, cp);
         if (!m->ctx) throw std::runtime_error("context_load_failed");
@@ -87,8 +118,13 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
                                                        jbyteArray input, jbyteArray background, jlong token, jint limit) {
     auto * m = reinterpret_cast<Model *>(model);
     auto * call = reinterpret_cast<Call *>(token);
+    if (!m->usable) {
+        fail(env, std::runtime_error("vulkan_context_failed_restart_session"));
+        return nullptr;
+    }
     try {
         check(call);
+        llama_perf_context_reset(m->ctx);
         // Success and failure both wipe the cache before returning to the sole caller.
         llama_set_abort_callback(m->ctx, aborted, call);
         const auto * vocab = llama_model_get_vocab(m->model);
@@ -114,18 +150,18 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.6f, 1));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
         llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
-        auto batch = llama_batch_init(256, 0, 1);
+        auto batch = llama_batch_init(batch_size, 0, 1);
         struct BatchGuard { llama_batch b; ~BatchGuard() { llama_batch_free(b); } } guard{batch};
         int pos = 0;
         while (pos < static_cast<int>(tokens.size())) {
             check(call);
-            batch.n_tokens = std::min(256, static_cast<int>(tokens.size()) - pos);
+            batch.n_tokens = std::min(batch_size, static_cast<int>(tokens.size()) - pos);
             for (int i = 0; i < batch.n_tokens; ++i) {
                 batch.token[i] = tokens[pos + i]; batch.pos[i] = pos + i;
                 batch.n_seq_id[i] = 1; batch.seq_id[i][0] = 0;
                 batch.logits[i] = pos + i == static_cast<int>(tokens.size()) - 1;
             }
-            if (llama_decode(m->ctx, batch) != 0) throw std::runtime_error("decode_failed_or_cancelled");
+            decode(m, batch, call);
             pos += batch.n_tokens;
         }
         std::string output;
@@ -145,18 +181,27 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
             if (output.size() > 32768) throw std::runtime_error("output_budget");
             batch.n_tokens = 1; batch.token[0] = t; batch.pos[0] = pos++;
             batch.n_seq_id[0] = 1; batch.seq_id[0][0] = 0; batch.logits[0] = true;
-            if (llama_decode(m->ctx, batch) != 0) throw std::runtime_error("decode_failed_or_cancelled");
+            decode(m, batch, call);
         }
         check(call);
         if (!complete || output.empty()) throw std::runtime_error("output_budget_or_empty");
         llama_set_abort_callback(m->ctx, nullptr, nullptr);
+        const auto clear_start = Clock::now();
         llama_memory_clear(llama_get_memory(m->ctx), true);
+        m->clear_ms = std::chrono::duration<double, std::milli>(Clock::now() - clear_start).count();
         auto result = env->NewByteArray(static_cast<jsize>(output.size()));
         if (result) env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()), reinterpret_cast<const jbyte *>(output.data()));
         return result;
     } catch (const std::exception & e) {
+        // Retain the call token and context until all submitted work has returned.
         llama_set_abort_callback(m->ctx, nullptr, nullptr);
-        llama_memory_clear(llama_get_memory(m->ctx), true);
+        try {
+            llama_synchronize(m->ctx);
+            llama_memory_clear(llama_get_memory(m->ctx), true);
+        } catch (const std::exception & cleanup) {
+            m->usable = false;
+            __android_log_print(ANDROID_LOG_ERROR, "CaptionGlassNative", "MT cleanup failed: %s", cleanup.what());
+        }
         fail(env, e); return nullptr;
     }
 }

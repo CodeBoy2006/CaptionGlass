@@ -36,7 +36,7 @@
     <string name="hint_silent">确认正在播放 · 部分应用禁止捕获</string>
     <string name="hint_restart">重新开启即可继续</string>
     <string name="hint_reimport">请重新导入模型</string>
-    <string name="hint_memory">关闭高内存应用后重试</string>
+    <string name="hint_model_load">关闭高内存应用后重试；此设备也可能不支持当前翻译模型</string>
     <string name="hint_overrun">音频缓冲已满，请重新开启</string>
     <string name="hint_start_failed">检查模型与权限后重试</string>
 

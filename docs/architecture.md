@@ -19,7 +19,7 @@ flowchart LR
 | --- | --- |
 | `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、离线语言包导入 |
 | `engine` | 原文稳定/提交/修订、单工作器队列、分页阅读调度、确定性回归检查 |
-| `native` | 固定版本 sherpa Kotlin/JNI、llama.cpp CPU C++ 绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
+| `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp Vulkan C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
 `engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。M0 固定文本预览已移除。
 
@@ -50,7 +50,7 @@ flowchart TD
 
 停止顺序：关闭输入、停止 AudioRecord 以解除阻塞、给所有未完成确认片段发出 `STOPPED`、置 native 原子取消标记、停止发布阅读页、处理已接受的 ASR 尾部、等待工作器返回、释放模型/线程/悬浮窗/projection、结束前台服务。回收完成前仍保持 busy，禁止开始第二个会话。系统撤销授权使用同一路径。读协程负责唯一一次 AudioRecord release。服务与会话以 `CaptureStatus` 发布准备、等待声音、聆听、未收到声音与各停止原因；界面将其映射为符号与短标签，不解析异常文本。
 
-Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子取消标志与 steady-clock deadline；CPU abort callback 在计算边界协作返回。调用返回并卸下 callback 后才释放 token。超时/撤回后，队列保留 active 槽直到匹配的 completion 到达，因此不会启动孤儿翻译或并行访问 context。ASR 库没有中途终止构造/解码 API，停止需要等待正在执行的调用返回。
+Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子取消标志与 steady-clock deadline。CPU abort callback 仅覆盖 CPU 算子；Vulkan 预填充每批最多 8 tokens，每批／生成 token 前后检查取消，并等待已提交 GPU 工作同步后返回。小批次使用上游 Vulkan 的向量计算路径，降低手机短提示的预填充开销。GPU 在途工作不可抢占，这限制了每次等待的工作量，不保证挂起驱动下的硬实时截止时间。调用返回并卸下 callback 后才释放 token。清理失败使该 context 不再接受翻译；固定运行库的仓库补丁防止析构中的 Vulkan 同步异常穿过 noexcept 析构函数。超时/撤回后，队列保留 active 槽直到匹配的 completion 到达，因此不会启动孤儿翻译或并行访问 context。ASR 库没有中途终止构造/解码 API，停止需要等待正在执行的调用返回。
 
 ### 3.2 音频与时间
 
@@ -94,10 +94,10 @@ Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，
 | --- | --- |
 | ASR | X-ASR zh/en 480 ms；sherpa-onnx v1.13.8 / `11afbd0…`；ORT 1.28.2；CPU 单线程、greedy search |
 | ASR（日语及多语） | PengChengStarling 八语种 streaming Zipformer；sherpa 官方 int8 encoder/joiner + matched decoder/tokens，revision `c6726c1…`；沿用同一 sherpa/ORT CPU 单线程；modified beam search，4 条 active paths |
-| MT | Hy-MT2 1.8B Q4_K_M；llama.cpp v0.4.0 / `5266f24…`；CPU 3 线程；context 2,048、batch 256、ubatch 64 |
+| MT | Hy-MT2 1.8B Q4_K_M；llama.cpp v0.4.0 / `5266f24…` + 仓库 Vulkan 清理补丁；首个 Vulkan 设备，全部层／KV／支持的算子卸载；剩余 CPU 算子 3 线程；context 2,048、每次提交 / batch / ubatch 8 |
 | Android native | NDK 27.1.12297006、CMake 3.22.1、arm64-v8a / ARMv8-A 基线；16 KB LOAD 对齐 |
 
-sherpa 官方 Android archive 和源代码 tar 的哈希固定在 `scripts/prepare-native.sh`。直接复用同版本 Kotlin JNI 声明，不手写另一套 C API。llama.cpp 源代码固定并静态链接到自己的小型 JNI 动态库，无 GPU/QNN 和动态后端下载。
+sherpa 官方 Android archive 和源代码 tar 的哈希固定在 `scripts/prepare-native.sh`。直接复用同版本 Kotlin JNI 声明，不手写另一套 C API。llama.cpp CPU/Vulkan 后端静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。显式选择 Vulkan 设备，不支持 Vulkan 1.2、算子／分配失败时沿现有加载失败或未翻译路径反馈；不静默切回纯 CPU 翻译。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
 
 翻译使用模型文件内的 Hy-MT2 单用户模板。BOS、角色分隔符单独识别为 special tokens；源文本与历史始终 `parse_special=false`，不能注入角色控制 token。采样固定 top-k 20、top-p 0.6、temperature 0.7、repeat penalty 1.05。JNI 用 UTF-8 byte arrays 传输输入输出，不用 modified UTF-8 的 `NewStringUTF` 传中文结果。[X-ASR 模型卡](https://huggingface.co/GilgameshWind/X-ASR-zh-en)、[Hy-MT2 GGUF](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF)
 

@@ -1,0 +1,37 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -480,7 +480,12 @@
+
+ llama_context::~llama_context() {
+     // wait for any pending asynchronous copies into the output buffers before they are freed
+-    synchronize();
++    try {
++        synchronize();
++    } catch (const std::exception & e) {
++        // A lost GPU must not throw through this noexcept destructor.
++        LLAMA_LOG_ERROR("%s: synchronization failed during teardown: %s\n", __func__, e.what());
++    }
+
+     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
+     if (!model.hparams.no_alloc && !opt_ctx) {
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -16310,9 +16310,13 @@
+     // discard any unsubmitted command buffers
+     ctx->compute_ctx.reset();
+     // wait for any pending command buffers to finish
+-    ggml_vk_synchronize(ctx);
+-
+-    ggml_vk_graph_cleanup(ctx);
++    try {
++        ggml_vk_synchronize(ctx);
++        ggml_vk_graph_cleanup(ctx);
++    } catch (const std::exception & e) {
++        // Device loss can also fail fence/pool resets. Destruction must still proceed.
++        GGML_LOG_ERROR("%s: synchronization failed during teardown: %s\n", __func__, e.what());
++    }
+
+     ggml_vk_destroy_buffer(ctx->prealloc_x);
+     ggml_vk_destroy_buffer(ctx->prealloc_y);

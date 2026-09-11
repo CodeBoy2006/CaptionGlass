@@ -9,7 +9,7 @@ bash scripts/prepare-native.sh
 ./gradlew :engine:check :app:assembleDebug :app:lintDebug
 ```
 
-使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽、1,000 个确认片段完整性、阅读停留/分页/重排与字体重测；本次增加语言代码／交换约束、日语句尾否定等待、日语标点残段和假名／韩文阅读停留。
+使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1；先设置 `JAVA_HOME` 和 `ANDROID_HOME`。宿主需要 Clang 与 Python 3，准备脚本编译固定的 shaderc 工具及 matched DEPS，以生成 Vulkan shader。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽、1,000 个确认片段完整性、阅读停留/分页/重排与字体重测；本次增加语言代码／交换约束、日语句尾否定等待、日语标点残段和假名／韩文阅读停留。
 
 CI 获取哈希固定的 native 依赖后运行上述检查。CI 不下载模型，不声称执行了真机推理。M0 的固定文本预览已删除。
 
@@ -24,7 +24,14 @@ bash scripts/device-check.sh <明确选择且解锁的测试设备序列号>
 
 系统合成语音使用 macOS Daniel / Tingting / Kyoko，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
 
-检查内容：模型目录与语言兼容规则、独立文件路径、三项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前取消、运行截止时间、输出预算耗尽、取消后复用；英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。
+检查内容：模型目录与语言兼容规则、独立文件路径、三项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
+
+模型已部署后，可在独立 Instrumentation 进程运行缺少 GPU 的回归检查；它在 native 注册前禁用 Vulkan，并断言明确报错而非改用纯 CPU：
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode no-vulkan \
+  com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
 
 vivo 的后台冻结可能在 Instrumentation 首个 Activity 启动前暂停进程。脚本在派发后显式打开目标 Activity；验收期间页面使用 `FLAG_KEEP_SCREEN_ON`，结束后解除。冻结等待不能混入模型性能。USB 安装仍遵守厂商逐次确认。
 
@@ -171,6 +178,48 @@ adb -s <serial> shell am start -n com.captionglass.app.test/com.captionglass.app
 
 证据保存在 ignored `artifacts/multilingual-build.log`、`multilingual-final-all.log`、`multilingual-asr-diagnostic.log` 与 `multilingual-asr-beam.log`。`mode asr-ja` 可重跑当前目录所固定的日语解码配置；`mode verify` 只重新校验模型文件，不执行质量测试。
 
+### 2.8 ASR CPU 与 Hy-MT2 Vulkan GPU
+
+2026-09-11，用户解锁并允许 USB 安装后，在 vivo V2415A（API 36、MT6991／天玑 9400、Mali-G925-Immortalis MC12、Vulkan 1.3）完成本节验证。最终 debug APK 已安装。ASR 仍是 sherpa CPU 单线程；模型文件、采样规则、上下文上限、队列和阅读规则保持原配置。
+
+运行日志确认 Hy-MT2 使用 `Vulkan0`，`offloaded 33/33 layers to GPU`；GPU 模型缓冲 1,075.74 MiB、KV 128 MiB、计算缓冲 3.81 MiB。每次提交、batch 和 ubatch 均为 8；剩余 CPU 算子沿用 3 线程。使用固定 shaderc v2025.3 构建含协作矩阵支持的 shader，系统提供 Vulkan loader／驱动，不集成 NPU/QNN。
+
+| 验证 | 结果 |
+| --- | --- |
+| 核心、debug APK、lint、测试 APK | `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` 全部通过 |
+| 原生打包 | APK 16 KB zipalign 通过；最终 `libcaptionglass.so` 的全部 LOAD 对齐为 `0x4000`，Vulkan 动态依赖为系统 `libvulkan.so` |
+| 手机 `mode all` | 通过目录规则、模型损坏拒绝／恢复、多方向真实 MT、预算、背景上下文、实时回放、停止再开、48 kHz 重采样与尾部保留 |
+| 取消 | 200 ms deadline 在两轮最终配置检查中分别于 209 / 398 ms 返回；运行 150 ms 后主动取消分别于调用开始后 219 / 218 ms 返回；随后模型复用通过 |
+| 1× 实时回放 | 中英、日中、日英、英日及停止样本共 14 个确认片段、14 个终态：11 条译文、3 个 `STOPPED`，无 `TIMED_OUT` |
+| 无 GPU 路径 | 独立只读 API 37 AVD 的 `mode no-vulkan` 通过，精确返回 `vulkan_device_unavailable`；该 AVD 的软件 Vulkan 不作为手机 GPU 性能证据 |
+| 资源抽样 | 加载后 PSS 为 2,152,449–2,355,808 KB；debug APK 约 112 MiB，CPU 基线约 61 MiB，增加部分主要来自内嵌 shader |
+
+同一手机顺序运行改动前 CPU 基线与最终 GPU 版本，原生短句调用总耗时如下。表中 GPU 数据统一取最终 `mode all`，不是从多次结果中挑最快值。
+
+| 原生输入／目标 | CPU 基线 | Vulkan 最终版本 |
+| --- | --- | --- |
+| 模型加载 | 296 ms | 1,101 ms |
+| Good subtitles give you time to read. → 中 | 1,541 ms | 1,920 ms |
+| 今天天气很好，我们去公园散步。 → 英 | 1,963 ms | 1,490 ms |
+| 今日はいい天気です。 → 中 | 1,387 ms | 988 ms |
+| 今日はいい天気です。 → 英 | 1,550 ms | 1,094 ms |
+| Thank you very much. → 日 | 1,733 ms | 1,368 ms |
+| 非常感谢。 → 日 | 1,655 ms | 1,351 ms |
+| Thank you very much. → 法 | 1,286 ms | 907 ms |
+| Thank you very much. → 韩 | 1,399 ms | 969 ms |
+| Thank you very much. → 阿 | 1,514 ms | 1,054 ms |
+| Thank you. → 中 | 1,110 ms | 770 ms |
+
+这组短句多数耗时下降约 18–31%，首次英译中却增加约 25%，模型加载也更慢。CPU 与 GPU 的浮点计算并非逐位一致，英日样例分别输出“本当にありがとうございます。”和“どうもありがとうございます。”；不能把这些小样本当作翻译质量等价证明。未清空文件／shader 缓存，也未严格控制温度；这不是 P50/P95、冷启动、耗电或持续吞吐结论。
+
+最终 1× 回放中，从开始到首个稳定原文／完整译文：英语到中文 1,709 / 5,362 ms，中文到英语 1,690 / 7,216 ms，日语到中文 1,265 / 4,767 ms，日语到英语 1,268 / 4,941 ms，多语 ASR 英语到日语 867 / 8,407 ms。以上包含语义确认等待；自然完成的样本均得到两条译文，不能用原生短句耗时替代这个闭环指标。
+
+调优时先验证了 64-token 批次：旧 NDK glslc 缺少协作矩阵支持，更新编译器后短句预填充仍达约 2–3.5 秒。8-token 批次触发上游 Vulkan 的向量计算路径，将预填充降至约 0.68–1.39 秒，并缩短取消等待。KV 清零仅约 4–6 ms，因此保留成功／失败后的原始缓存清零。没有放宽超时或改变 ASR／分句来获得通过结果。
+
+**限制：** GPU 在途工作不可抢占，驱动挂起时不保证硬实时 deadline。清理异常隔离与析构补丁已完成代码审查，但未做真实驱动丢失／挂起注入。原有“字幕→字母”和日语漏词仍存在。此次未复验跨应用播放捕获与悬浮窗全流程，也未完成 30–60 分钟热稳态、电量、自然语音质量或其他 GPU 的验收。
+
+证据位于 ignored `artifacts/vulkan-batch8-build.log`、`vulkan-phone-cpu.log`、`vulkan-phone-batch8-native.log`、`vulkan-phone-final-all.log`、`vulkan-phone-final-native.log` 和 `vulkan-emulator-unavailable.log`。前期 64-token 试验日志单独保留，不混入最终数据。
+
 ## 3. M2：可持续体验
 
 实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，回看，TXT/SRT/VTT 导出，相关术语，完整下载/恢复/取消管理。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
@@ -192,4 +241,4 @@ adb -s <serial> shell am start -n com.captionglass.app.test/com.captionglass.app
 
 ## 4. M3：经验证的扩展
 
-日语与多语种已提供实验性接入，仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU/QNN 白名单和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。
+日语、多语种与 Vulkan MT 已提供实验性接入，仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU 设备白名单、QNN/NPU 和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。

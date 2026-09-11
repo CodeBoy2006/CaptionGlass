@@ -2,11 +2,11 @@
 
 本地优先的 Android 跨应用双语字幕层。让原文及时出现，让译文稳定成句，让连续观看时的字幕仍然跟得上。
 
-**已接入模型选择器、日语识别与多语种翻译。** 中英可使用 X-ASR；日语等输入使用 PengChengStarling 流式识别，两者共用 Hy-MT2，在本机 CPU 上运行。支持播放音频捕获、双语悬浮窗与独立模型离线导入。应用没有网络权限，不保存原始音频。当前是 arm64 手机实验版本；短样本验证不代表准确率、所有机型或长时性能已达标。
+**已接入模型选择器、日语识别与多语种翻译。** 中英可使用 X-ASR；日语等输入使用 PengChengStarling，两种识别模型保持 CPU 推理，共用的 Hy-MT2 使用 Vulkan GPU 翻译。需要支持 Vulkan 1.2 及所需计算能力的 arm64 设备；不支持时明确报告模型加载失败，不自动改用纯 CPU 翻译。支持播放音频捕获、双语悬浮窗与独立模型离线导入。应用没有网络权限，不保存原始音频。当前为实验版本，设备兼容性、加速收益和长时表现以 [验收记录](docs/validation.md) 为准。
 
 ## 构建与运行
 
-需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1。使用 checked-in Gradle wrapper。首次构建下载的 native 源码与运行库都固定 SHA-256；权重与构建产物不入 Git。
+需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主机 Clang（macOS Command Line Tools／Linux clang）和 Python 3。先设置 `JAVA_HOME` 和 `ANDROID_HOME`。使用 checked-in Gradle wrapper。准备脚本下载 SHA-256 固定的 native 源码、运行库和 Khronos 头文件，构建 shaderc v2025.3 及其 matched DEPS，并应用仓库内的 Vulkan 清理补丁。首次准备需要编译宿主 shader 工具；NDK 自带旧版 glslc 不支持所需的协作矩阵 shader。权重与构建产物不入 Git。
 
 ```sh
 sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
@@ -63,7 +63,7 @@ bash scripts/device-check.sh <已明确选择且解锁的测试设备序列号>
 ```text
 app/                 Compose、采集服务、会话 owner、原生悬浮窗、SAF 导入
 engine/              纯 Kotlin 原文/队列/阅读规则与可执行回归检查
-native/              固定 sherpa JNI + llama.cpp CPU 绑定
+native/              固定 sherpa CPU JNI + llama.cpp Vulkan 翻译绑定
 models/catalog.json 固定模型目录：能力 / 文件角色 / revision / size / SHA-256 / runtime
 scripts/             native 准备、合成音频和真机验收
 third_party/         依赖许可与说明

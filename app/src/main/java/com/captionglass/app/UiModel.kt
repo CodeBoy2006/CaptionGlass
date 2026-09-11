@@ -64,7 +64,7 @@ internal val CaptureStatus.hint: Int?
         CaptureStatus.CONSENT_ENDED, CaptureStatus.PERMISSION_LOST, CaptureStatus.CAPTURE_INTERRUPTED,
         CaptureStatus.RECOGNITION_FAILED -> R.string.hint_restart
         CaptureStatus.PACK_INVALID -> R.string.hint_reimport
-        CaptureStatus.LOAD_FAILED -> R.string.hint_memory
+        CaptureStatus.LOAD_FAILED -> R.string.hint_model_load
         CaptureStatus.OVERRUN -> R.string.hint_overrun
         CaptureStatus.START_FAILED -> R.string.hint_start_failed
         else -> null

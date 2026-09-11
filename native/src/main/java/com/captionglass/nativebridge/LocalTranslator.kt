@@ -21,6 +21,9 @@ class LocalTranslator(model: File, call: NativeCall) : Closeable {
     private var handle = NativeBindings.load(
         model.path.toByteArray(), call.handle)
 
+    /** Developer acceptance timings; call on the same worker after translation returns. */
+    fun timings(): String { check(handle != 0L); return NativeBindings.timings(handle) }
+
     fun translate(source: String, context: List<String>, target: Language,
                   call: NativeCall, maxTokens: Int = 256): String {
         require(source.isNotBlank() && source.length <= 8_192 && maxTokens in 1..256)
@@ -43,5 +46,6 @@ internal object NativeBindings {
     external fun freeCall(call: Long)
     external fun load(path: ByteArray, call: Long): Long
     external fun unload(model: Long)
+    external fun timings(model: Long): String
     external fun translate(model: Long, prompt: ByteArray, background: ByteArray, call: Long, maxTokens: Int): ByteArray
 }

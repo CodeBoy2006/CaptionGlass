@@ -26,7 +26,7 @@ class DeviceChecks : Instrumentation() {
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "multilingual", "replay", "fallback", "latency", "asr-ja"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
@@ -52,6 +52,15 @@ class DeviceChecks : Instrumentation() {
                 report("PASS: interrupted pack activation restores previous pack")
             }
             runBlocking {
+                if (mode == "no-vulkan") {
+                    // Backend registration is process-wide; run this mode in its own instrumentation process.
+                    android.system.Os.setenv("GGML_DISABLE_VULKAN", "1", true)
+                    NativeCall(30_000).use { call ->
+                        val error = runCatching { LocalTranslator(catalog.translator.file(targetContext, "model"), call).close() }.exceptionOrNull()
+                        check(error is IllegalStateException && error.message == "vulkan_device_unavailable") { "Unexpected missing-GPU result: $error" }
+                    }
+                    report("PASS: missing Vulkan device rejected without CPU-only fallback")
+                }
                 if (mode == "asr-ja") japaneseAsrCheck()
                 if (mode in listOf("all", "native", "multilingual")) nativeChecks()
                 if (mode in listOf("all", "replay")) {
@@ -119,6 +128,7 @@ class DeviceChecks : Instrumentation() {
                 val start = SystemClock.elapsedRealtime()
                 return try { model.translate(source, emptyList(), target, call).also {
                     report("MT to-${target.code} ms=${SystemClock.elapsedRealtime() - start}: $source => $it")
+                    report("MT ${model.timings()}")
                 } } finally { call.close() }
             }
             check(translate("Good subtitles give you time to read.", Language.ZH).any { it in '\u4e00'..'\u9fff' })
@@ -143,6 +153,19 @@ class DeviceChecks : Instrumentation() {
                 check(SystemClock.elapsedRealtime() - start < 5000)
             }
             NativeCall(30_000).use { call ->
+                val start = SystemClock.elapsedRealtime()
+                // Keep all model calls on this worker; only the token crosses threads.
+                val canceller = Thread { Thread.sleep(150); call.cancel() }.apply { start() }
+                try {
+                    val error = runCatching { model.translate("Please translate this sentence carefully. ".repeat(180),
+                        emptyList(), Language.ZH, call) }.exceptionOrNull()
+                    check(error is IllegalStateException && error.message == "cancelled_or_deadline") { "Unexpected active-cancel result: $error" }
+                    val elapsed = SystemClock.elapsedRealtime() - start
+                    report("MT active_cancel_return_ms=$elapsed")
+                    check(elapsed < 5000) { "GPU cancellation did not return within the acceptance budget" }
+                } finally { canceller.join() }
+            }
+            NativeCall(30_000).use { call ->
                 check(runCatching { model.translate("We are testing subtitles on this phone.", emptyList(), Language.ZH, call, maxTokens = 1) }.isFailure)
             }
             check(translate("Thank you.", Language.ZH).isNotBlank())
@@ -152,7 +175,7 @@ class DeviceChecks : Instrumentation() {
                 check(translated.contains("谢") && !translated.contains("字幕") && !translated.contains("背景")) { "Translated context instead of source: $translated" }
                 report("PASS: short source with background: $translated")
             }
-            report("PASS: pre-dispatch cancellation, deadline, output budget, reuse after abort")
+            report("PASS: pre-dispatch/active cancellation, deadline, output budget, reuse after abort")
         } finally { model.close() }
     }
     private suspend fun replay(name: String, target: Language, stopAtMs: Long? = null, repetitions: Int = 1,
