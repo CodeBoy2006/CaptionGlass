@@ -1,4 +1,93 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:locale="zh">
     <string name="app_name">CaptionGlass</string>
-    <string name="subtitle_page">字幕 %1$d/%2$d · 拖动 / 切换穿透</string>
+
+    <string name="tab_captions">字幕</string>
+    <string name="tab_records">记录</string>
+    <string name="tab_settings">设置</string>
+
+    <string name="language_en" translatable="false">English</string>
+    <string name="language_zh" translatable="false">中文</string>
+    <string name="direction_en_zh" translatable="false">English → 中文</string>
+    <string name="direction_zh_en" translatable="false">中文 → English</string>
+    <string name="swap_direction">切换翻译方向</string>
+    <string name="offline">离线</string>
+
+    <string name="action_start">开启字幕</string>
+    <string name="action_stop">停止</string>
+    <string name="action_stop_captions">停止字幕</string>
+    <string name="action_import">导入语言包</string>
+    <string name="action_replace">替换</string>
+    <string name="action_dismiss">关闭提示</string>
+    <string name="state_authorizing">等待授权</string>
+    <string name="state_importing">导入中 %1$d%%</string>
+    <string name="state_stopping">正在停止</string>
+    <string name="pack_size">5 个文件 · 1.8 GB</string>
+
+    <string name="status_idle">未开启</string>
+    <string name="status_preparing">准备中</string>
+    <string name="status_waiting">等待声音</string>
+    <string name="status_hearing">聆听中</string>
+    <string name="status_silent">未收到声音</string>
+    <string name="status_stopped">已停止</string>
+    <string name="status_consent_ended">捕获授权已结束</string>
+    <string name="status_permission_lost">捕获权限已失效</string>
+    <string name="status_pack_invalid">语言包校验失败</string>
+    <string name="status_load_failed">语言包加载失败</string>
+    <string name="status_audio_unsupported">此设备无法捕获播放声音</string>
+    <string name="status_capture_interrupted">音频捕获中断</string>
+    <string name="status_overrun">识别跟不上播放</string>
+    <string name="status_recognition_failed">识别中断</string>
+    <string name="status_start_failed">无法启动字幕</string>
+    <string name="hint_silent">确认正在播放 · 部分应用禁止捕获</string>
+    <string name="hint_restart">重新开启即可继续</string>
+    <string name="hint_reimport">请重新导入语言包</string>
+    <string name="hint_memory">关闭高内存应用后重试</string>
+    <string name="hint_overrun">音频缓冲已满，请重新开启</string>
+    <string name="hint_start_failed">检查语言包与权限后重试</string>
+
+    <string name="notice_consent_cancelled">已取消捕获授权</string>
+    <string name="notice_audio_denied">需要录音权限来捕获播放声音，不使用麦克风</string>
+    <string name="notice_overlay_denied">悬浮窗未开启，字幕仅在应用内显示</string>
+    <string name="notice_start_rejected">请回到应用前台重新开启</string>
+    <string name="action_open_settings">去设置</string>
+
+    <string name="signal_reading_behind">%1$d 条未及显示</string>
+    <string name="signal_backlog">%1$d 条未翻译</string>
+    <string name="signal_overlay_off">悬浮窗未开启</string>
+
+    <string name="reason_backlog">积压未译</string>
+    <string name="reason_failed">翻译失败</string>
+    <string name="reason_timed_out">翻译超时</string>
+    <string name="reason_stopped">已停止</string>
+    <string name="reason_superseded">已修订</string>
+
+    <string name="records_empty">暂无记录</string>
+    <string name="records_segments">%1$d 段</string>
+    <string name="records_pending">%1$d 处理中</string>
+    <string name="records_limit">仅保留最近 200 条</string>
+
+    <string name="settings_pack">语言包</string>
+    <string name="pack_title" translatable="false">中文 ⇄ English</string>
+    <string name="pack_ready">已就绪</string>
+    <string name="pack_missing">未导入</string>
+    <string name="pack_import_failed">导入失败，请检查空间与文件权限</string>
+    <string name="settings_overlay">悬浮字幕</string>
+    <string name="overlay_permission">悬浮窗权限</string>
+    <string name="overlay_allowed">已允许</string>
+    <string name="overlay_denied">未允许</string>
+    <string name="overlay_pass_through">穿透</string>
+    <string name="overlay_blocking">拦截</string>
+    <string name="overlay_gesture">轻点把手切换 · 拖动把手移动</string>
+    <string name="settings_privacy">隐私</string>
+    <string name="privacy_network">无网络</string>
+    <string name="privacy_microphone">不用麦克风</string>
+    <string name="privacy_audio">不存音频</string>
+    <string name="privacy_screen">不截画面</string>
+    <string name="version">版本 %1$s</string>
+
+    <string name="overlay_handle">字幕把手，拖动移动，轻点切换触摸穿透</string>
+    <string name="overlay_pending" translatable="false">• • •</string>
+
+    <string name="notification_channel">实时字幕</string>
+    <string name="notification_title">字幕运行中</string>
 </resources>

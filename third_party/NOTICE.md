@@ -10,6 +10,7 @@ The following upstream components keep their own licenses.
 | llama.cpp / ggml CPU | `ggml-org/llama.cpp` commit `5266f24da75dc449bd56cbed7addb9c8e4a6a73e` (v0.4.0) | MIT |
 | X-ASR Chinese/English model | `GilgameshWind/X-ASR-zh-en` revision in `models/zh-en.json` | Apache-2.0 |
 | Hy-MT2 1.8B Q4_K_M model | `tencent/Hy-MT2-1.8B-GGUF` revision in `models/zh-en.json` | Apache-2.0 |
+| Material Symbols Rounded icons | Google Material Symbols release SVGs, converted to `app/src/main/res/drawable/ic_*.xml` | Apache-2.0 |
 
 Full primary license texts and ONNX Runtime's third-party notices are adjacent.
 Model files are downloaded separately and never committed or bundled in the APK.

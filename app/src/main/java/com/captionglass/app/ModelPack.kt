@@ -10,13 +10,15 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
+/** Progress spans the copy and hash passes, so both halves of a large import move the indicator. */
+data class PackState(val importing: Boolean = false, val progress: Float = 0f, val failed: Boolean = false, val detail: String? = null)
+
 /** M1 has one pinned offline pack. No downloaded code, network fallback or mutable model aliases. */
 object ModelPack {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val mutableState = MutableStateFlow("")
+    private val mutableState = MutableStateFlow(PackState())
     val state = mutableState.asStateFlow()
-    var importing = false
-        private set
+    val importing: Boolean get() = mutableState.value.importing
     @Synchronized fun directory(context: Context): File {
         val target = File(context.filesDir, "language-pack")
         val backup = File(context.filesDir, "language-pack-backup")
@@ -43,7 +45,7 @@ object ModelPack {
     }.getOrDefault(false)
 
     /** Used by both SAF import and device acceptance. Hash every byte before native model parsing. */
-    fun verify(context: Context, dir: File = directory(context)) {
+    fun verify(context: Context, dir: File = directory(context), read: (Long) -> Unit = {}) {
         entries(context).forEach { entry ->
             val file = File(dir, entry.getString("path").substringAfterLast('/'))
             check(file.length() == entry.getLong("sizeBytes")) { "语言包文件大小不匹配：${file.name}" }
@@ -54,6 +56,7 @@ object ModelPack {
                     val n = input.read(buffer)
                     if (n < 0) break
                     digest.update(buffer, 0, n)
+                    read(n.toLong())
                 }
             }
             check(digest.digest().joinToString("") { "%02x".format(it) } == entry.getString("sha256")) {
@@ -65,18 +68,24 @@ object ModelPack {
 
     fun import(context: Context, tree: Uri) {
         if (importing || PlaybackCaptureService.state.value.active) return
-        importing = true
-        mutableState.value = "正在导入并校验语言包…"
+        mutableState.value = PackState(importing = true)
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     val staging = File(context.filesDir, "language-pack-staging")
-                    staging.deleteRecursively(); check(staging.mkdirs())
+                    staging.deleteRecursively(); check(staging.mkdirs()) { "无法创建临时目录，请检查存储空间" }
                     try {
                         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
                         val documents = mutableMapOf<String, Uri>()
                         val expected = entries(context)
                         val names = expected.map { it.getString("path").substringAfterLast('/') }.toSet()
+                        val total = expected.sumOf { it.getLong("sizeBytes") } * 2
+                        var done = 0L
+                        fun advance(bytes: Long) {
+                            done += bytes
+                            val progress = (done.toFloat() / total).coerceAtMost(1f)
+                            if (progress - mutableState.value.progress >= 0.005f) mutableState.value = PackState(importing = true, progress = progress)
+                        }
                         context.contentResolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                             DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
                             while (cursor.moveToNext()) {
@@ -100,26 +109,28 @@ object ModelPack {
                                         copied += n
                                         check(copied <= entry.getLong("sizeBytes")) { "语言包文件过大：$name" }
                                         output.write(buffer, 0, n)
+                                        advance(n.toLong())
                                     }
                                     output.fd.sync()
                                 }
                             }
                         }
-                        verify(context, staging)
+                        verify(context, staging) { advance(it) }
                         synchronized(ModelPack) {
                             val target = directory(context)
                             val backup = File(context.filesDir, "language-pack-backup")
                             backup.deleteRecursively()
-                            if (target.exists()) check(target.renameTo(backup))
+                            if (target.exists()) check(target.renameTo(backup)) { "语言包安装失败" }
                             if (!staging.renameTo(target)) { backup.renameTo(target); error("语言包安装失败") }
                             backup.deleteRecursively()
                         }
                     } finally { staging.deleteRecursively() }
                 }
-                mutableState.value = "中英语言包已就绪"
+                mutableState.value = PackState()
             } catch (e: Exception) {
-                mutableState.value = e.message ?: "导入失败，请检查空间与文件权限"
-            } finally { importing = false }
+                // Our own checks carry actionable copy; platform I/O messages are not user-facing.
+                mutableState.value = PackState(failed = true, detail = (e as? IllegalStateException)?.message)
+            }
         }
     }
 }

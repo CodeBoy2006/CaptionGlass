@@ -161,7 +161,7 @@ class DeviceChecks : Instrumentation() {
                 position = end
                 if (stopAtMs != null && end * 1000L / 16000 >= stopAtMs) {
                     stopping = true
-                    session.stop("测试停止")
+                    session.stop()
                     break
                 }
             }
@@ -183,7 +183,7 @@ class DeviceChecks : Instrumentation() {
             val longText = "Long subtitles must be paged completely. 很长的字幕需要完整分页。".repeat(30)
             check(overlay.pages(longText, true).joinToString("") == longText)
         } catch (e: Throwable) {
-            session.stop("测试结束")
+            session.stop()
             runCatching { session.close() }
             throw e
         } finally { overlay.close(); scope.cancel() }

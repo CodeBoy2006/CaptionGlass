@@ -1,7 +1,7 @@
 <resources>
-    <style name="Theme.CaptionGlass" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.CaptionGlass" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowBackground">@color/window</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

@@ -9,11 +9,21 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.Executors
 
+/** Observed capture condition. The first five describe a live session; the rest explain how one ended. */
+enum class CaptureStatus {
+    IDLE, PREPARING, WAITING, HEARING, SILENT,
+    STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED,
+    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, START_FAILED,
+}
+
+/** A stop cause the UI can explain without parsing exception text. */
+internal class CaptureFailure(val status: CaptureStatus) : Exception(status.name)
+
 data class CaptureState(
     val active: Boolean = false,
     val stopping: Boolean = false,
     val chineseSource: Boolean = false,
-    val message: String = "尚未开启字幕",
+    val status: CaptureStatus = CaptureStatus.IDLE,
     val stable: String = "",
     val provisional: String = "",
     val page: CaptionPage? = null,
@@ -41,7 +51,7 @@ internal class CaptionSession(
     private val id = UUID.randomUUID().toString()
     private val queue = TranslationQueue(id, contextCharacters = 512)
     private val scheduler = CaptionScheduler()
-    private var state = CaptureState(active = true, chineseSource = chineseSource, message = "正在加载本地语言包…")
+    private var state = CaptureState(active = true, chineseSource = chineseSource, status = CaptureStatus.PREPARING)
     private var gate = SourceGate()
     private val utteranceKeys = mutableSetOf<SegmentKey>()
     private var revision = 0
@@ -70,7 +80,7 @@ internal class CaptionSession(
         finally { call.close(); activeCall = null }
         check(!stopped) { "字幕已停止" }
         beganAt = SystemClock.elapsedRealtime()
-        update { copy(message = "等待可捕获的声音") }
+        update { copy(status = CaptureStatus.WAITING) }
         asrJob = scope.launch {
             var sampleRate = 16_000
             var endMs = 0L
@@ -83,7 +93,7 @@ internal class CaptionSession(
                 }
                 val tail = withContext(asrWorker) { checkNotNull(recognizer).finish(sampleRate) }
                 tail.forEach { hypothesis(it, endMs) }
-            } catch (e: Exception) { failure = e; stop("识别中断，请重新开启字幕") }
+            } catch (e: Exception) { failure = e; stop(CaptureStatus.RECOGNITION_FAILED) }
         }
         ticker = scope.launch {
             while (isActive) {
@@ -159,15 +169,15 @@ internal class CaptionSession(
         }
     }
 
-    fun message(text: String) { if (!stopped) update { copy(message = text) } }
+    fun status(value: CaptureStatus) { if (!stopped && state.status != value) update { copy(status = value) } }
     fun reflow() { scheduler.reflow(paginate) }
-    fun stop(message: String = "字幕已停止") {
+    fun stop(reason: CaptureStatus = CaptureStatus.STOPPED) {
         if (stopped) return
         stopped = true
         queue.stop().forEach(::outcome)
         activeCall?.cancel()
         pcm.close()
-        update { copy(stopping = true, message = message, page = null) }
+        update { copy(stopping = true, status = reason, page = null) }
     }
 
     suspend fun close() {
@@ -182,7 +192,7 @@ internal class CaptionSession(
         withContext(mtWorker) { translator?.close(); translator = null }
         asrWorker.close(); mtWorker.close()
         closed = true
-        update { copy(active = false, stopping = false, page = null, message = if (stopped) message else "本次字幕已结束") }
+        update { copy(active = false, stopping = false, page = null, status = if (stopped) status else CaptureStatus.ENDED) }
         failure?.let { throw it }
     }
 }

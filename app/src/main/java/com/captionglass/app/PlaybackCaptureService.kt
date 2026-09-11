@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.media.*
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -25,7 +26,7 @@ class PlaybackCaptureService : Service() {
     @Volatile private var stopping = false
     private var started = false
     private val callback = object : MediaProjection.Callback() {
-        override fun onStop() { requestStop("捕获授权已结束") }
+        override fun onStop() { requestStop(CaptureStatus.CONSENT_ENDED) }
     }
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -36,9 +37,10 @@ class PlaybackCaptureService : Service() {
         }
         if (started || mutableState.value.active || ModelPack.importing) { if (!started) stopSelf(); return START_NOT_STICKY }
         started = true
-        mutableState.value = CaptureState(active = true, chineseSource = intent.getBooleanExtra(EXTRA_CHINESE, false), message = "正在准备字幕…")
+        val chinese = intent.getBooleanExtra(EXTRA_CHINESE, false)
+        mutableState.value = CaptureState(active = true, chineseSource = chinese, status = CaptureStatus.PREPARING)
         try {
-            startForeground(1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            startForeground(1, notification(chinese), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(EXTRA_PROJECTION, Intent::class.java)
                 else @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_PROJECTION)
             check(data != null && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -46,19 +48,23 @@ class PlaybackCaptureService : Service() {
             projection!!.registerCallback(callback, Handler(Looper.getMainLooper()))
             val view = SubtitleOverlay(this)
             overlay = view
+            view.render(mutableState.value)
             if (Settings.canDrawOverlays(this)) view.show()
-            val pipeline = CaptionSession(scope, intent.getBooleanExtra(EXTRA_CHINESE, false), view::pages) {
+            val pipeline = CaptionSession(scope, chinese, view::pages) {
                 mutableState.value = it
                 view.render(it)
             }
             session = pipeline
             scope.launch {
                 try {
-                    withContext(Dispatchers.IO) { ModelPack.verify(this@PlaybackCaptureService) }
+                    withContext(Dispatchers.IO) {
+                        try { ModelPack.verify(this@PlaybackCaptureService) }
+                        catch (_: Exception) { throw CaptureFailure(CaptureStatus.PACK_INVALID) }
+                    }
                     check(!stopping) { "字幕已停止" }
                     try { pipeline.start(ModelPack.directory(this@PlaybackCaptureService)) }
                     catch (_: Exception) {
-                        if (!stopping) requestStop("无法加载本地语言包，请关闭其他高内存应用后重试")
+                        if (!stopping) requestStop(CaptureStatus.LOAD_FAILED)
                         return@launch
                     }
                     check(!stopping) { "字幕已停止" }
@@ -66,11 +72,14 @@ class PlaybackCaptureService : Service() {
                     recorder = audio
                     readAudio(audio, pipeline)
                 } catch (e: Exception) {
-                    if (!stopping) requestStop(if (e is SecurityException) "捕获权限已失效，请重新授权"
-                        else e.message?.take(100) ?: "无法启动字幕，请检查语言包和捕获权限")
+                    if (!stopping) requestStop(when (e) {
+                        is SecurityException -> CaptureStatus.PERMISSION_LOST
+                        is CaptureFailure -> e.status
+                        else -> CaptureStatus.START_FAILED
+                    })
                 } finally {
                     withContext(NonCancellable) {
-                        pipeline.stop(if (stopping) mutableState.value.message else "字幕已停止")
+                        pipeline.stop(if (stopping) mutableState.value.status else CaptureStatus.STOPPED)
                         runCatching { pipeline.close() }
                         overlay?.close(); overlay = null
                         projection?.let { it.unregisterCallback(callback); it.stop() }; projection = null
@@ -81,7 +90,8 @@ class PlaybackCaptureService : Service() {
                 }
             }
         } catch (e: Exception) {
-            mutableState.value = CaptureState(message = if (e is SecurityException) "捕获权限已失效，请重新授权" else "无法启动字幕，请重新开始")
+            mutableState.value = CaptureState(chineseSource = chinese,
+                status = if (e is SecurityException) CaptureStatus.PERMISSION_LOST else CaptureStatus.START_FAILED)
             projection?.let { it.unregisterCallback(callback); it.stop() }; projection = null
             overlay?.close(); overlay = null
             stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
@@ -114,7 +124,7 @@ class PlaybackCaptureService : Service() {
                 if (e is SecurityException) throw e
             }
         }
-        error("当前设备无法以 16 kHz 或 48 kHz 捕获播放音频")
+        throw CaptureFailure(CaptureStatus.AUDIO_UNSUPPORTED)
     }
 
     private suspend fun readAudio(audio: AudioRecord, pipeline: CaptionSession) = withContext(Dispatchers.IO) {
@@ -122,22 +132,27 @@ class PlaybackCaptureService : Service() {
         val buffer = ShortArray(rate / 10)
         var samples = 0L
         val beganAt = SystemClock.elapsedRealtime()
-        var lastSignal = beganAt
+        var lastSignal = 0L
         var lastReport = 0L
         try {
             while (!stopping) {
                 val count = audio.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                 if (stopping) break
-                check(count > 0) { "音频捕获中断，请重新授权" }
+                if (count <= 0) throw CaptureFailure(CaptureStatus.CAPTURE_INTERRUPTED)
                 samples += count
                 val values = FloatArray(count) { buffer[it] / 32768f }
-                check(pipeline.offer(PcmFrame(values, rate, samples * 1000 / rate))) { "识别跟不上播放，音频缓冲已满；请重新开始" }
+                if (!pipeline.offer(PcmFrame(values, rate, samples * 1000 / rate))) throw CaptureFailure(CaptureStatus.OVERRUN)
                 val now = SystemClock.elapsedRealtime()
                 if ((0 until count).any { kotlin.math.abs(buffer[it].toInt()) > 64 }) lastSignal = now
                 if (now - lastReport >= 1000) {
                     lastReport = now
-                    withContext(Dispatchers.Main) { pipeline.message(if (now - lastSignal < 3000) "正在生成本地字幕 · 不保存音频"
-                        else "未收到可捕获的声音：请确认正在播放，或尝试允许捕获的应用") }
+                    // Amplitude only shows that sound arrived; it never explains why none did.
+                    val observed = when {
+                        lastSignal > 0 && now - lastSignal < 3000 -> CaptureStatus.HEARING
+                        now - beganAt < 3000 -> CaptureStatus.WAITING
+                        else -> CaptureStatus.SILENT
+                    }
+                    withContext(Dispatchers.Main) { pipeline.status(observed) }
                 }
             }
         } finally {
@@ -146,22 +161,26 @@ class PlaybackCaptureService : Service() {
         }
     }
 
-    private fun requestStop(message: String = "字幕已停止") {
+    private fun requestStop(reason: CaptureStatus = CaptureStatus.STOPPED) {
         if (stopping) return
         stopping = true
-        session?.stop(message)
+        session?.stop(reason)
         overlay?.close()
         runCatching { recorder?.stop() }
     }
-    private fun notification(): Notification {
+    private fun notification(chinese: Boolean): Notification {
         val channel = "live-captions"
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(channel, "实时字幕", NotificationManager.IMPORTANCE_LOW))
+            NotificationChannel(channel, getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(this, 0, Intent(this, javaClass).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        return Notification.Builder(this, channel).setSmallIcon(R.drawable.ic_caption).setContentTitle("CaptionGlass")
-            .setContentText("本地字幕正在运行 · 点击停止结束音频捕获").setContentIntent(open).setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "停止字幕", stop).build()).build()
+        return Notification.Builder(this, channel).setSmallIcon(R.drawable.ic_caption).setColor(getColor(R.color.brand))
+            .setContentTitle(getString(R.string.notification_title))
+            .setContentText(getString(if (chinese) R.string.direction_zh_en else R.string.direction_en_zh))
+            .setShowWhen(true).setWhen(System.currentTimeMillis()).setUsesChronometer(true)
+            .setCategory(Notification.CATEGORY_SERVICE).setContentIntent(open).setOngoing(true)
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop),
+                getString(R.string.action_stop), stop).build()).build()
     }
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
