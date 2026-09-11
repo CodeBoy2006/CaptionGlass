@@ -18,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -26,8 +25,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: ModelSelection, installed: Set<String>,
-                            busy: Boolean, overlayAllowed: Boolean, onImport: (ModelSpec) -> Unit, onSelect: (ModelSelection) -> Unit, onOverlaySettings: () -> Unit) {
+internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: ModelSelection, localModels: Map<String, InstalledModel>, availableBytes: Long?,
+                            busy: Boolean, overlayAllowed: Boolean, onImport: (ModelSpec) -> Unit, onSelect: (ModelSelection) -> Unit,
+                            onDownload: (ModelSpec) -> Unit, onCheck: (ModelSpec) -> Unit, onRemove: (ModelSpec) -> Unit,
+                            onOverlaySettings: () -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     val version = remember {
@@ -42,43 +43,8 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
         }
 
         Section(R.string.settings_pack) {
-            catalog.models.forEachIndexed { index, model ->
-                val ready = model.id in installed
-                if (index > 0) HorizontalDivider(Modifier.padding(vertical = 18.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconTile(if (model.kind == "asr") R.drawable.ic_hearing else R.drawable.ic_subtitles)
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(model.name, style = MaterialTheme.typography.titleMedium)
-                        Text(modelSize(model.size), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                    }
-                    StateTag(ready, if (ready) R.string.pack_ready else R.string.pack_missing)
-                }
-                Text(if (model.kind == "asr") model.languages.joinToString(" · ") { it.label }
-                    else stringResource(R.string.translation_languages, model.languages.size),
-                    Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                if (pack.importing && pack.modelId == model.id) {
-                    LinearProgressIndicator({ pack.progress }, Modifier.fillMaxWidth().padding(top = 16.dp), strokeCap = StrokeCap.Round)
-                    Text(stringResource(R.string.state_importing, (pack.progress * 100).toInt()), Modifier.padding(top = 8.dp),
-                        style = MaterialTheme.typography.labelLarge)
-                } else {
-                    if (pack.failed && pack.modelId == model.id) Text(pack.detail ?: stringResource(R.string.pack_import_failed),
-                        Modifier.padding(top = 10.dp), color = colors.error, style = MaterialTheme.typography.bodyMedium)
-                    Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilledTonalButton({ onImport(model) }, enabled = !busy) {
-                            Icon(painterResource(R.drawable.ic_folder_open), null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(stringResource(if (ready) R.string.action_replace else R.string.action_import))
-                        }
-                        if (model.kind == "asr") TextButton({ onSelect(selection.copy(recognizerId = model.id)) },
-                            enabled = !busy && selection.languages.source in model.languages && selection.recognizerId != model.id) {
-                            Text(stringResource(if (selection.recognizerId == model.id) R.string.model_selected else R.string.model_use))
-                        }
-                    }
-                }
-            }
-            Text(stringResource(R.string.shared_translator), Modifier.padding(top = 12.dp),
-                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            ModelManager(pack, catalog, selection, localModels, availableBytes, busy,
+                onImport, onSelect, onDownload, onCheck, onRemove)
         }
 
         Section(R.string.settings_overlay) {

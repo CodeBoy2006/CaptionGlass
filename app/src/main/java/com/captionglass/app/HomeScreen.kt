@@ -34,13 +34,13 @@ import androidx.compose.ui.unit.dp
 internal fun HomeScreen(
     capture: CaptureState, pack: PackState, missing: ModelSpec?, overlayAllowed: Boolean,
     selection: ModelSelection, authorizing: Boolean, catalog: ModelCatalog, installed: Set<String>,
-    onSelect: (ModelSelection) -> Unit, onStart: () -> Unit, onStop: () -> Unit, onImport: () -> Unit,
+    onSelect: (ModelSelection) -> Unit, onStart: () -> Unit, onStop: () -> Unit, onManageModels: () -> Unit,
     onOpenRecords: () -> Unit, onOverlaySettings: () -> Unit,
 ) {
-    val busy = capture.active || authorizing || pack.importing
-    val direction = @Composable { SelectionControls(selection, catalog, installed, enabled = !busy, onSelect) }
+    val busy = capture.active || authorizing || pack.busy
+    val direction = @Composable { SelectionControls(selection, catalog, installed, enabled = !busy, onSelect, onManageModels) }
     val signals = @Composable { Signals(capture, pack, overlayAllowed, onOpenRecords, onOverlaySettings) }
-    val control = @Composable { PrimaryControl(capture, pack, missing, authorizing, onStart, onStop, onImport) }
+    val control = @Composable { PrimaryControl(capture, pack, missing, authorizing, onStart, onStop, onManageModels) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val viewport = maxHeight
         if (maxWidth > maxHeight && maxWidth >= 600.dp) {
@@ -99,7 +99,7 @@ private fun Signals(capture: CaptureState, pack: PackState, overlayAllowed: Bool
         AnimatedVisibility(!capture.active && capture.status.isProblem && !dismissed) {
             Notice(capture.status.icon, stringResource(capture.status.label), capture.status.hint?.let { stringResource(it) }) { dismissed = true }
         }
-        if (pack.failed) Notice(R.drawable.ic_package, pack.detail ?: stringResource(R.string.pack_import_failed), null, null)
+        if (pack.failed) Notice(R.drawable.ic_package, pack.detail ?: stringResource(R.string.pack_import_failed), null, ModelPack::dismiss)
         if (chips) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!overlayAllowed) SignalChip(R.drawable.ic_picture_in_picture, stringResource(R.string.signal_overlay_off),
                 MaterialTheme.colorScheme.tertiary, onOverlaySettings)
@@ -145,34 +145,34 @@ private fun SignalChip(icon: Int, text: String, tint: Color, onClick: () -> Unit
     }
 }
 
-private enum class Control { IMPORT, IMPORTING, START, AUTHORIZING, PREPARING, RUNNING, STOPPING }
+private enum class Control { MODELS, MANAGING, START, AUTHORIZING, PREPARING, RUNNING, STOPPING }
 
-/** One round button always performs the next sensible step: import, start or stop. */
+/** One round button always performs the next sensible step: model preparation, start or stop. */
 @Composable
 private fun PrimaryControl(capture: CaptureState, pack: PackState, missing: ModelSpec?, authorizing: Boolean,
-                           onStart: () -> Unit, onStop: () -> Unit, onImport: () -> Unit) {
+                           onStart: () -> Unit, onStop: () -> Unit, onManageModels: () -> Unit) {
     val control = when {
         capture.stopping -> Control.STOPPING
         capture.active && capture.status == CaptureStatus.PREPARING -> Control.PREPARING
         capture.active -> Control.RUNNING
-        pack.importing -> Control.IMPORTING
+        pack.busy -> Control.MANAGING
         authorizing -> Control.AUTHORIZING
-        missing != null -> Control.IMPORT
+        missing != null -> Control.MODELS
         else -> Control.START
     }
     val colors = MaterialTheme.colorScheme
     val stops = control == Control.PREPARING || control == Control.RUNNING || control == Control.STOPPING
-    val enabled = control == Control.IMPORT || control == Control.START || control == Control.PREPARING || control == Control.RUNNING
+    val enabled = control == Control.MODELS || control == Control.START || control == Control.PREPARING || control == Control.RUNNING
     val container by animateColorAsState(if (stops) colors.inverseSurface else colors.primary, label = "container")
     val content = (if (stops) colors.inverseOnSurface else colors.onPrimary).copy(alpha = if (enabled) 1f else 0.6f)
     val action = stringResource(when (control) {
-        Control.IMPORT, Control.IMPORTING -> if (missing?.kind == "asr") R.string.action_import_asr else R.string.action_import_mt
+        Control.MODELS, Control.MANAGING -> if (missing?.kind == "asr") R.string.action_import_asr else R.string.action_import_mt
         Control.START, Control.AUTHORIZING -> R.string.action_start
         else -> R.string.action_stop_captions
     })
     val label = when (control) {
-        Control.IMPORT -> action
-        Control.IMPORTING -> stringResource(R.string.state_importing, (pack.progress * 100).toInt())
+        Control.MODELS -> action
+        Control.MANAGING -> stringResource(pack.phase.label, (pack.progress * 100).toInt())
         Control.START -> action
         Control.AUTHORIZING -> stringResource(R.string.state_authorizing)
         Control.PREPARING -> stringResource(R.string.status_preparing)
@@ -183,18 +183,18 @@ private fun PrimaryControl(capture: CaptureState, pack: PackState, missing: Mode
         Box(Modifier.size(120.dp), contentAlignment = Alignment.Center) {
             if (control == Control.RUNNING && capture.status == CaptureStatus.HEARING) Halo(colors.primary)
             when (control) {
-                Control.IMPORTING -> CircularProgressIndicator({ pack.progress }, Modifier.size(108.dp), strokeWidth = 4.dp,
+                Control.MANAGING -> CircularProgressIndicator({ pack.progress }, Modifier.size(108.dp), strokeWidth = 4.dp,
                     trackColor = colors.surfaceContainerHighest, strokeCap = StrokeCap.Round)
                 Control.AUTHORIZING, Control.PREPARING, Control.STOPPING ->
                     CircularProgressIndicator(Modifier.size(108.dp), strokeWidth = 4.dp, strokeCap = StrokeCap.Round)
                 else -> Unit
             }
-            Surface({ when (control) { Control.IMPORT -> onImport(); Control.START -> onStart(); else -> onStop() } },
+            Surface({ when (control) { Control.MODELS -> onManageModels(); Control.START -> onStart(); else -> onStop() } },
                 Modifier.size(88.dp).semantics { contentDescription = action }, enabled = enabled,
                 shape = CircleShape, color = container, contentColor = content) {
                 Box(contentAlignment = Alignment.Center) {
                     Crossfade(when (control) {
-                        Control.IMPORT, Control.IMPORTING -> R.drawable.ic_folder_open
+                        Control.MODELS, Control.MANAGING -> R.drawable.ic_folder_open
                         Control.START, Control.AUTHORIZING -> R.drawable.ic_power
                         else -> R.drawable.ic_stop
                     }, label = "icon") { Icon(painterResource(it), null, Modifier.size(36.dp)) }
@@ -203,7 +203,8 @@ private fun PrimaryControl(capture: CaptureState, pack: PackState, missing: Mode
         }
         Spacer(Modifier.height(6.dp))
         Text(label, style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
-        Text(if (control == Control.IMPORT && missing != null) "${missing.name} · ${modelSize(missing.size)}" else "",
+        if (control == Control.MANAGING) TextButton(onManageModels) { Text(stringResource(R.string.settings_pack)) }
+        Text(if (control == Control.MODELS && missing != null) "${missing.name} · ${modelSize(missing.size)}" else "",
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
     }
 }

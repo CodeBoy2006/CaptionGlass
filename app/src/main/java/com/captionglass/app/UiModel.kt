@@ -3,6 +3,24 @@ package com.captionglass.app
 import com.captionglass.engine.UntranslatedReason
 import java.util.Locale
 
+internal val PackPhase.label: Int
+    get() = when (this) {
+        PackPhase.DOWNLOADING -> R.string.state_downloading
+        PackPhase.IMPORTING -> R.string.state_importing
+        PackPhase.VERIFYING -> R.string.state_verifying
+        PackPhase.REMOVING -> R.string.state_removing
+        PackPhase.CANCELLING -> R.string.state_cancelling
+        PackPhase.IDLE -> R.string.pack_ready
+    }
+
+internal val ModelSpec.description: Int
+    get() = when (id) {
+        "x-asr-zh-en-480ms" -> R.string.model_x_asr
+        "nemotron-3.5-560ms-int8" -> R.string.model_nemotron
+        "pengcheng-8lang-int8" -> R.string.model_pengcheng
+        else -> R.string.shared_translator
+    }
+
 /** Caption surfaces stay dark in both themes, like broadcast subtitles. Shared by the overlay and the in-app stage. */
 internal object CaptionPalette {
     const val STAGE = 0xFF121815.toInt()

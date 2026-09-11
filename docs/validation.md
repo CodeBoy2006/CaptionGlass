@@ -24,7 +24,9 @@ bash scripts/device-check.sh <明确选择且解锁的测试设备序列号>
 
 系统合成语音使用 macOS Daniel / Tingting / Kyoko，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
 
-检查内容：模型目录与语言兼容规则、独立文件路径、三项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
+检查内容：模型目录与语言兼容规则、独立文件路径、四项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；Nemotron 与原有模型的英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
+
+模型管理可单独执行 `mode models`，使用独立小文件目录覆盖安装、取消、校验失效、恢复和删除；`mode model-network` 再增加实际 HTTPS 下载与 HTTP 错误检查，命令见 README，不需要部署推理权重。
 
 模型已部署后，可在独立 Instrumentation 进程运行缺少 GPU 的回归检查；它在 native 注册前禁用 Vulkan，并断言明确报错而非改用纯 CPU：
 
@@ -220,9 +222,42 @@ adb -s <serial> shell am start -n com.captionglass.app.test/com.captionglass.app
 
 证据位于 ignored `artifacts/vulkan-batch8-build.log`、`vulkan-phone-cpu.log`、`vulkan-phone-batch8-native.log`、`vulkan-phone-final-all.log`、`vulkan-phone-final-native.log` 和 `vulkan-emulator-unavailable.log`。前期 64-token 试验日志单独保留，不混入最终数据。
 
+### 2.9 模型管理与 Nemotron 3.5
+
+2026-09-11，Nemotron 推理与原有模型回归在 vivo V2415A（API 36、天玑 9400、Mali-G925）执行；模型管理与界面使用 `-read-only` 的独立 `CaptionGlassLatency` AVD（API 37、arm64、16 KB 页、8 GB RAM）。本次新增 INTERNET 权限，仅用于用户主动下载固定模型；此前章节的无网络权限描述对应当时版本。
+
+接入 Nemotron 3.5 ASR Streaming 0.6B 的 560 ms INT8 sherpa 导出：revision `ab43d895f5985b1bbab8b6eac8607fcdc05343f3`，四文件共 682,215,356 字节。完整下载后逐文件验证尺寸与 SHA-256，并实际读取 ONNX metadata，确认 128 维特征、65 帧窗口、56 帧步长及语言 prompt 映射。沿用 sherpa 1.13.8 / ORT 1.28.2、CPU 单线程与现有流接口；源语言通过 `setOption("language", code)` 指定，翻译继续使用 Hy-MT2 Vulkan。
+
+| 检查 | 结果 |
+| --- | --- |
+| 构建与核心 | `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` 通过；最终 APK 安装至手机后 `mode verify` 通过，16 KB zipalign 通过 |
+| 模型准备与匹配 | 四套固定文件校验通过；18 种 Nemotron 输入、20 种合并输入能力；日语自动匹配、保留已有兼容选择、泰语回到 PengChengStarling、拒绝不兼容源语言通过 |
+| 安装边界 | 小文件实际安装；同尺寸损坏、截断、超长输入拒绝并保留旧模型；取消清理 staging；拒绝并发删除；取消／失败的重新校验撤销标记；backup 恢复；删除仅影响指定目录，全部通过 |
+| 网络 | `mode model-network` 实际下载固定 tokens 并核对哈希；HTTP 404 不覆盖已装模型；应用 UI 下载完整 Nemotron → 校验 → 已就绪通过 |
+| 本地导入 | Android 系统文件夹选择：缺少 encoder 时明确报错且旧模型可用；补齐四文件后完整 683 MB 替换成功，staging／backup 清理 |
+| 手机 `mode all` | Nemotron 日中、日英停止、英日，加上原有 ASR／MT 回归，共 20 个确认片段、20 个终态：16 条译文、4 个 `STOPPED`，无 `TIMED_OUT` |
+| 音频与停止 | Nemotron 与 X-ASR 的 48 kHz 状态重采样和 stop-only 尾部冲刷均通过，保留最后的 “translation”；未修改会话队列、分句或超时来获得通过 |
+| 界面 | 原生截图及实际操作覆盖未安装、下载、就绪、选用、详情、删除确认、导入失败／成功；浅色、深色、130% 字号与横屏检查；独立原生 UI 审查结论为 ship，无必修问题；不包含 TalkBack 全流程 |
+
+本轮 Nemotron 的 1× 合成音频回放如下。时间从回放开始计算，包含识别稳定和语义等待；日英样本在 8.5 秒主动停止，第二段得到 `STOPPED`。
+
+| 方向 | 首个稳定原文 | 首个完整译文 | 确认／终态 |
+| --- | --- | --- | --- |
+| 日语 → 中文 | 1,933 ms | 5,019 ms | 2 / 2 |
+| 日语 → 英语（停止样本） | 1,933 ms | 4,459 ms | 2 / 2 |
+| 英语 → 日语 | 1,937 ms | 5,383 ms | 2 / 2 |
+
+Nemotron 与 MT 加载后 PSS 抽样为 2,316,481–2,521,592 KB，并非峰值或热稳态。同轮原 PengChengStarling 日中首个稳定原文／译文为 1,265 / 4,446 ms，因此不能据此宣称 Nemotron 更快。
+
+**质量限制：** 直接 ASR 诊断得到“今日はいい天気です。”和“このアプリは日本語の音声を翻訳します”，仍遗漏“公園を散歩しましょう”部分。这是 Kyoko 合成语音的局部观察，不代表日语准确率提升；确认／终态完整也不代表没有识别漏词。英语到日语仍可能将 “local speech recognition” 误译为“現地言語の音声認識”。其他 Nemotron 语种未逐一做真实音频验收；自然语音、噪声、否定／数字／专名、跨应用持续捕获、其他机型与 30–60 分钟热稳态未在本轮验证。
+
+模型管理使用现有协程与 Android API，无后台服务、断点续传或自定义模型市场。下载时需保持应用开启；取消或进程被系统关闭后重试从头开始。设备低空间分配失败与 OEM 杀进程未做专门注入；安装中断的目录恢复由可执行检查覆盖。
+
+证据在 ignored `artifacts/model-manager-final-build.log`、`model-manager-phone-all.log`、`model-manager-network.log`、`nemotron-onnx-metadata.json` 与 `model-manager-ui/`。固定来源、许可和哈希见 `models/catalog.json` 与 `third_party/NOTICE.md`。
+
 ## 3. M2：可持续体验
 
-实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，回看，TXT/SRT/VTT 导出，相关术语，完整下载/恢复/取消管理。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
+实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，回看，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
 
 使用有授权的同一批样本，覆盖讲课、技术专名、中英混说、快语速、口音、背景音乐、数字和否定。至少一台主流骁龙中端、一台天玑中端和一台旗舰，同时播放视频，运行 30–60 分钟。
 

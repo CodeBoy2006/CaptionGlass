@@ -34,6 +34,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Transient permission outcomes. Session outcomes live in [CaptureStatus]. */
 private enum class Notice(val text: Int, val opensSettings: Boolean = false) {
@@ -60,7 +62,7 @@ class MainActivity : ComponentActivity() {
     private var pendingImport by mutableStateOf<String?>(null)
     private lateinit var catalog: ModelCatalog
     private fun select(value: ModelSelection) {
-        if (authorizing || pendingImport != null || ModelPack.importing || PlaybackCaptureService.state.value.active) return
+        if (authorizing || pendingImport != null || ModelPack.busy || PlaybackCaptureService.state.value.active) return
         require(catalog.valid(value))
         selection = value
         getSharedPreferences("selection", MODE_PRIVATE).edit {
@@ -94,7 +96,7 @@ class MainActivity : ComponentActivity() {
         if (uri != null && model != null) ModelPack.import(applicationContext, model, uri)
     }
     private fun import(model: ModelSpec) {
-        if (authorizing || pendingImport != null || ModelPack.importing || PlaybackCaptureService.state.value.active) return
+        if (authorizing || pendingImport != null || ModelPack.busy || PlaybackCaptureService.state.value.active) return
         pendingImport = model.id
         importFolder.launch(null)
     }
@@ -111,7 +113,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun overlaySettings() = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri())
     private fun start() {
-        if (authorizing || pendingImport != null || ModelPack.importing || PlaybackCaptureService.state.value.active ||
+        if (authorizing || pendingImport != null || ModelPack.busy || PlaybackCaptureService.state.value.active ||
             !catalog.valid(selection) || catalog.required(selection).any { !ModelPack.ready(this, it) }) return
         authorizing = true
         // Offer the overlay settings once per process; afterwards the home chip and settings row lead there.
@@ -138,6 +140,7 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(ModelSelection())
         authorizing = savedInstanceState?.getBoolean("authorizing") ?: false
         pendingImport = savedInstanceState?.getString("pendingImport")
+        ModelPack.recover(applicationContext, catalog.models)
         enableEdgeToEdge()
         setContent {
             CaptionGlassTheme {
@@ -145,8 +148,12 @@ class MainActivity : ComponentActivity() {
                 val pack by ModelPack.state.collectAsStateWithLifecycle()
                 var resumes by remember { mutableIntStateOf(0) }
                 LifecycleResumeEffect(Unit) { resumes++; onPauseOrDispose { } }
-                val installed = remember(pack, capture.active, resumes) {
-                    catalog.models.filter { ModelPack.ready(this@MainActivity, it) }.map { it.id }.toSet()
+                val localModels = remember(pack.busy, capture.active, resumes) {
+                    catalog.models.associate { it.id to ModelPack.installed(this@MainActivity, it) }
+                }
+                val installed = localModels.filterValues { it.ready }.keys
+                val availableBytes by produceState<Long?>(null, pack.busy, resumes) {
+                    value = withContext(Dispatchers.IO) { runCatching { ModelPack.availableBytes(this@MainActivity) }.getOrNull() }
                 }
                 val overlayAllowed = remember(resumes) { Settings.canDrawOverlays(this@MainActivity) }
                 val selected = if (capture.active) capture.selection else selection
@@ -196,11 +203,14 @@ class MainActivity : ComponentActivity() {
                                 when (Destination.entries[shown]) {
                                     Destination.CAPTIONS -> HomeScreen(capture, pack, missing, overlayAllowed, selected, choosing, catalog, installed,
                                         onSelect = ::select, onStart = ::start, onStop = ::stop,
-                                        onImport = { missing?.let(::import) }, onOpenRecords = { tab = Destination.RECORDS.ordinal },
+                                        onManageModels = { tab = Destination.SETTINGS.ordinal }, onOpenRecords = { tab = Destination.RECORDS.ordinal },
                                         onOverlaySettings = { startActivity(overlaySettings()) })
                                     Destination.RECORDS -> RecordsScreen(capture, records)
-                                    Destination.SETTINGS -> SettingsScreen(pack, catalog, selected, installed,
-                                        capture.active || choosing || pack.importing, overlayAllowed, onImport = ::import, onSelect = ::select,
+                                    Destination.SETTINGS -> SettingsScreen(pack, catalog, selected, localModels, availableBytes,
+                                        capture.active || choosing || pack.busy, overlayAllowed, onImport = ::import, onSelect = ::select,
+                                        onDownload = { if (!authorizing && pendingImport == null) ModelPack.download(applicationContext, it) },
+                                        onCheck = { if (!authorizing && pendingImport == null) ModelPack.recheck(applicationContext, it) },
+                                        onRemove = { if (!authorizing && pendingImport == null) ModelPack.remove(applicationContext, it) },
                                         onOverlaySettings = { startActivity(overlaySettings()) })
                                 }
                             }

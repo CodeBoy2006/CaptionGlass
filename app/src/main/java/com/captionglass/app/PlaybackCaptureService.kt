@@ -37,7 +37,7 @@ class PlaybackCaptureService : Service() {
             requestStop(); if (!started) stopSelf()
             return START_NOT_STICKY
         }
-        if (started || mutableState.value.active || ModelPack.importing) { if (!started) stopSelf(); return START_NOT_STICKY }
+        if (started || mutableState.value.active || ModelPack.busy) { if (!started) stopSelf(); return START_NOT_STICKY }
         started = true
         val catalog = ModelCatalog(this)
         val selection = runCatching {
@@ -73,7 +73,7 @@ class PlaybackCaptureService : Service() {
                         catch (_: Exception) { throw CaptureFailure(CaptureStatus.PACK_INVALID) }
                     }
                     check(!stopping) { "字幕已停止" }
-                    try { pipeline.start(catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService),
+                    try { pipeline.start(catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService, selection.languages.source),
                         catalog.translator.file(this@PlaybackCaptureService, "model")) }
                     catch (_: Exception) {
                         if (!stopping) requestStop(CaptureStatus.LOAD_FAILED)

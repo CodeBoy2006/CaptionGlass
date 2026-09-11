@@ -19,18 +19,23 @@ class DeviceChecks : Instrumentation() {
     private var mode = "all"
     private val catalog by lazy { ModelCatalog(targetContext) }
     private val baseline get() = catalog.recognizer(ModelSelection())
-    private val multilingual get() = catalog.recognizers.single { Language.JA in it.languages }
+    private val multilingual get() = catalog.recognizers.single { it.id == "pengcheng-8lang-int8" }
+    private val nemotron get() = catalog.recognizers.single { it.id == "nemotron-3.5-560ms-int8" }
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; start() }
     private fun report(text: String) { sendStatus(0, Bundle().apply { putString("stream", "$text\n") }) }
     override fun onStart() {
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja", "nemotron", "models", "model-network"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: catalog\n") }); return
+            }
+            if (mode in listOf("models", "model-network")) {
+                runBlocking { modelManagerChecks(mode == "model-network") }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") }); return
             }
             catalog.models.forEach { ModelPack.verify(targetContext, it) }
             if (mode == "all") {
@@ -61,7 +66,14 @@ class DeviceChecks : Instrumentation() {
                     }
                     report("PASS: missing Vulkan device rejected without CPU-only fallback")
                 }
-                if (mode == "asr-ja") japaneseAsrCheck()
+                if (mode == "asr-ja") japaneseAsrCheck(multilingual)
+                if (mode in listOf("all", "nemotron")) {
+                    japaneseAsrCheck(nemotron)
+                    replay("ja", Language.ZH, recognizerId = nemotron.id)
+                    replay("ja", Language.EN, stopAtMs = 8500, recognizerId = nemotron.id)
+                    replay("en", Language.JA, recognizerId = nemotron.id)
+                    fallbackCheck(nemotron)
+                }
                 if (mode in listOf("all", "native", "multilingual")) nativeChecks()
                 if (mode in listOf("all", "replay")) {
                     replay("en", Language.ZH)
@@ -88,9 +100,10 @@ class DeviceChecks : Instrumentation() {
         }
     }
     /** Diagnostic uses the same real-time PCM without SourceGate, MT, or UI state. */
-    private suspend fun japaneseAsrCheck() = withContext(Dispatchers.Default) {
+    private suspend fun japaneseAsrCheck(model: ModelSpec) = withContext(Dispatchers.Default) {
         val samples = readWave(File(targetContext.filesDir, "fixtures/ja.wav"))
-        LocalRecognizer(multilingual.recognizerFiles(targetContext)).use { asr ->
+        report("ASR model=${model.id} forced_language=${model.languagePrompt}")
+        LocalRecognizer(model.recognizerFiles(targetContext, Language.JA)).use { asr ->
             val began = SystemClock.elapsedRealtime()
             var previous = ""
             for (position in samples.indices step 1600) {
@@ -108,13 +121,21 @@ class DeviceChecks : Instrumentation() {
         val initial = ModelSelection()
         check(catalog.valid(initial))
         val japanese = catalog.withLanguages(initial, LanguagePair(Language.JA, Language.ZH))
-        check(japanese.recognizerId == multilingual.id && catalog.valid(japanese))
+        check(japanese.recognizerId == nemotron.id && catalog.valid(japanese))
         check(!catalog.valid(japanese.copy(recognizerId = baseline.id)))
-        check(Language.FR !in catalog.sources && Language.FR in catalog.translator.languages)
+        check(Language.FR in catalog.sources && Language.FR in catalog.translator.languages)
+        check(Language.HE !in catalog.sources && Language.HE in catalog.translator.languages)
+        check(Language.TH !in nemotron.languages && Language.ID !in nemotron.languages)
+        check(nemotron.recognizerFiles(targetContext, Language.JA).language == Language.JA)
+        check(multilingual.recognizerFiles(targetContext, Language.JA).language == null)
+        check(runCatching { nemotron.recognizerFiles(targetContext, Language.TH) }.isFailure)
+        check(catalog.withLanguages(initial, LanguagePair(Language.FR, Language.ZH)).recognizerId == nemotron.id)
+        check(catalog.withLanguages(japanese, LanguagePair(Language.TH, Language.ZH)).recognizerId == multilingual.id)
+        check(catalog.withLanguages(japanese.copy(recognizerId = multilingual.id), japanese.languages).recognizerId == multilingual.id)
         check(catalog.withLanguages(japanese, japanese.languages.swapped()).languages.target == Language.JA)
         check(catalog.required(initial).last() == catalog.required(japanese).last())
         check(baseline.file(targetContext, "tokens") != multilingual.file(targetContext, "tokens"))
-        check(runCatching { catalog.withLanguages(initial, LanguagePair(Language.FR, Language.ZH)) }.isFailure)
+        check(runCatching { catalog.withLanguages(initial, LanguagePair(Language.HE, Language.ZH)) }.isFailure)
         report("PASS: catalog pins, source/target capabilities, compatible selection, shared translation model")
     }
     private suspend fun nativeChecks() = withContext(Dispatchers.Default) {
@@ -227,7 +248,7 @@ class DeviceChecks : Instrumentation() {
         }
         try {
             if (mode == "latency") overlay.show()
-            session.start(catalog.recognizer(selection).recognizerFiles(targetContext), catalog.translator.file(targetContext, "model"))
+            session.start(catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator.file(targetContext, "model"))
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
             began = SystemClock.elapsedRealtime()
@@ -268,11 +289,11 @@ class DeviceChecks : Instrumentation() {
         } finally { overlay.close(); scope.cancel() }
     }
 
-    private suspend fun fallbackCheck() = withContext(Dispatchers.Default) {
+    private suspend fun fallbackCheck(model: ModelSpec = baseline) = withContext(Dispatchers.Default) {
         val original = readWave(File(targetContext.filesDir, "fixtures/en.wav"))
         // Remove the fixture's padded silence: finish() must preserve the last spoken word.
         val samples = original.copyOf(original.size - 25_600)
-        LocalRecognizer(baseline.recognizerFiles(targetContext)).use { asr ->
+        LocalRecognizer(model.recognizerFiles(targetContext, Language.EN)).use { asr ->
             val finals = mutableListOf<String>()
             var position = 0
             while (position < samples.size) {
@@ -285,6 +306,86 @@ class DeviceChecks : Instrumentation() {
             val text = finals.joinToString(" ")
             check(text.contains("translation", ignoreCase = true)) { "48 kHz/stop tail lost final word: $text" }
             report("PASS: 48 kHz resampler and stop-only tail: $text")
+        }
+    }
+
+
+    /** Tiny isolated packs exercise the real install path without touching a user's models. */
+    private suspend fun modelManagerChecks(network: Boolean) {
+        while (ModelPack.busy) delay(20)
+        val payload = ByteArray(32_768) { (it % 251).toByte() }
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
+        val model = baseline.copy(id = "manager-check", files = listOf(ModelFile("tokens", "tokens.txt", payload.size.toLong(), digest,
+            nemotron.files.single { it.role == "tokens" }.url)), manifest = "manager-check-v1")
+        suspend fun install(bytes: ByteArray) {
+            val job = withContext(Dispatchers.Main) {
+                checkNotNull(ModelPack.install(targetContext, model, PackPhase.IMPORTING) { bytes.inputStream() })
+            }
+            job.join()
+        }
+        try {
+            install(payload)
+            check(ModelPack.ready(targetContext, model))
+            val original = model.file(targetContext, "tokens").readBytes()
+            install(payload.copyOf().apply { this[0] = 127 })
+            check(ModelPack.state.value.failed && ModelPack.ready(targetContext, model))
+            check(model.file(targetContext, "tokens").readBytes().contentEquals(original))
+            install(payload.copyOf(100))
+            check(ModelPack.state.value.failed && ModelPack.ready(targetContext, model))
+            install(payload + byteArrayOf(1))
+            check(ModelPack.state.value.failed && ModelPack.ready(targetContext, model))
+            report("PASS: successful install, corrupt/truncated/oversized input rejected; previous pack retained")
+            val job = withContext(Dispatchers.Main) {
+                checkNotNull(ModelPack.install(targetContext, model, PackPhase.IMPORTING) {
+                    object : java.io.ByteArrayInputStream(payload) {
+                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                            Thread.sleep(40)
+                            return super.read(buffer, offset, minOf(length, 256))
+                        }
+                    }
+                }).also {
+                    check(ModelPack.remove(targetContext, model) == null) { "Concurrent model deletion was accepted" }
+                }
+            }
+            delay(100)
+            withContext(Dispatchers.Main) { ModelPack.cancel() }
+            job.join()
+            check(!ModelPack.busy && ModelPack.ready(targetContext, model))
+            check(!File(targetContext.filesDir, "models/manager-check-staging").exists())
+            report("PASS: cancel cleans staging and preserves original; concurrent operation rejected")
+            check(runCatching { ModelPack.verify(targetContext, model) { throw CancellationException() } }.isFailure)
+            check(!ModelPack.ready(targetContext, model)) { "Cancelled recheck retained an unchecked marker" }
+            withContext(Dispatchers.Main) { checkNotNull(ModelPack.recheck(targetContext, model)) }.join()
+            check(ModelPack.ready(targetContext, model))
+            report("PASS: cancelled verification requires a complete recheck before use")
+            model.file(targetContext, "tokens").writeBytes(payload.copyOf().apply { this[0] = 127 })
+            withContext(Dispatchers.Main) { checkNotNull(ModelPack.recheck(targetContext, model)) }.join()
+            check(ModelPack.state.value.failed && !ModelPack.ready(targetContext, model))
+            check(!File(ModelPack.directory(targetContext, model), "verified").exists())
+            install(payload)
+            val dir = ModelPack.directory(targetContext, model)
+            val backup = File(targetContext.filesDir, "models/manager-check-backup")
+            check(dir.renameTo(backup))
+            check(ModelPack.ready(targetContext, model) && !backup.exists())
+            report("PASS: recheck invalidates corrupt marker; interrupted activation restores backup")
+            if (network) {
+                val token = nemotron.files.single { it.role == "tokens" }
+                val downloaded = model.copy(files = listOf(token), manifest = "manager-network-v1")
+                withContext(Dispatchers.Main) { checkNotNull(ModelPack.download(targetContext, downloaded)) }.join()
+                check(ModelPack.ready(targetContext, downloaded)) { "HTTPS model download: ${ModelPack.state.value}" }
+                val missing = downloaded.copy(files = listOf(token.copy(url = token.url + ".missing")))
+                withContext(Dispatchers.Main) { checkNotNull(ModelPack.download(targetContext, missing)) }.join()
+                check(ModelPack.state.value.failed && ModelPack.ready(targetContext, downloaded))
+                report("PASS: actual pinned HTTPS download verified; HTTP error keeps installed model")
+            }
+            withContext(Dispatchers.Main) { checkNotNull(ModelPack.remove(targetContext, model)) }.join()
+            check(!ModelPack.ready(targetContext, model) && ModelPack.installed(targetContext, model).bytes == 0L)
+            report("PASS: explicit model deletion clears only the isolated pack")
+        } finally {
+            withContext(Dispatchers.Main) { ModelPack.cancel() }
+            while (ModelPack.busy) delay(20)
+            listOf("", "-backup", "-staging", "-deleting").forEach { File(targetContext.filesDir, "models/manager-check$it").deleteRecursively() }
+            withContext(Dispatchers.Main) { ModelPack.dismiss() }
         }
     }
 

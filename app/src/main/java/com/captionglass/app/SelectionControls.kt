@@ -16,14 +16,17 @@ import androidx.compose.ui.unit.dp
 import com.captionglass.engine.LanguagePair
 import java.util.Locale
 
-internal fun modelSize(bytes: Long) = if (bytes >= 1_000_000_000)
-    String.format(Locale.ROOT, "%.2f GB", bytes / 1_000_000_000.0) else "${(bytes + 999_999) / 1_000_000} MB"
+internal fun modelSize(bytes: Long) = when {
+    bytes >= 1_000_000_000 -> String.format(Locale.ROOT, "%.2f GB", bytes / 1_000_000_000.0)
+    bytes >= 1_000_000 -> "${(bytes + 999_999) / 1_000_000} MB"
+    else -> "${(bytes + 999) / 1_000} KB"
+}
 
 /** Source capability and translation capability are different lists. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog, installed: Set<String>, enabled: Boolean,
-                               onSelect: (ModelSelection) -> Unit) {
+                               onSelect: (ModelSelection) -> Unit, onManageModels: () -> Unit) {
     var chooser by remember { mutableIntStateOf(0) }
     var search by remember(chooser) { mutableStateOf("") }
     val pair = selection.languages
@@ -90,7 +93,8 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
                     val selected = model.id == selection.recognizerId
                     ListItem(headlineContent = { Text(model.name) }, supportingContent = {
                         Column {
-                            Text(model.languages.joinToString(" · ") { it.label })
+                            Text(model.languages.take(3).joinToString(" · ") { it.label } +
+                                if (model.languages.size > 3) stringResource(R.string.model_more_languages, model.languages.size) else "")
                             Text("${modelSize(model.size)} · " + stringResource(if (compatible) {
                                 if (model.id in installed) R.string.pack_ready else R.string.pack_missing
                             } else R.string.model_incompatible))
@@ -100,6 +104,7 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
                             onSelect(selection.copy(recognizerId = model.id)); chooser = 0
                         })
                 }
+                item { TextButton({ chooser = 0; onManageModels() }) { Text(stringResource(R.string.settings_pack)) } }
                 item { Text(stringResource(R.string.shared_translator), Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }

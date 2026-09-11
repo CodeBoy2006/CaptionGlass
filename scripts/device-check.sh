@@ -7,7 +7,7 @@ log="artifacts/device-checks-${serial//[^[:alnum:]_.-]/_}.log"
 "$adb_command" -s "$serial" install -r app/build/outputs/apk/debug/app-debug.apk
 "$adb_command" -s "$serial" install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 "$adb_command" -s "$serial" shell run-as com.captionglass.app mkdir -p files/models files/fixtures
-tar -C artifacts/models -cf - x-asr-zh-en-480ms pengcheng-8lang-int8 hy-mt2-1.8b-q4-k-m |
+tar -C artifacts/models -cf - x-asr-zh-en-480ms nemotron-3.5-560ms-int8 pengcheng-8lang-int8 hy-mt2-1.8b-q4-k-m |
   "$adb_command" -s "$serial" exec-in run-as com.captionglass.app tar -xf - -C files/models
 tar -C artifacts/fixtures/wav -cf - en.wav zh.wav ja.wav |
   "$adb_command" -s "$serial" exec-in run-as com.captionglass.app tar -xf - -C files/fixtures

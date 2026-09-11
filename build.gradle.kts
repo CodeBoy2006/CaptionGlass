@@ -6,7 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
 }
 
-// Developer-only download. The APK has no network permission and imports data files via SAF.
+// Developer convenience: download the same pinned files used by the in-app model manager.
 tasks.register("downloadModels") {
     group = "setup"
     description = "Download pinned models into artifacts/models/<id>; optionally select -Pmodel=<id>."
