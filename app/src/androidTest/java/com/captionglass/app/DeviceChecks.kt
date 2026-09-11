@@ -9,6 +9,7 @@ import android.view.WindowManager
 import com.captionglass.nativebridge.*
 import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
+import com.captionglass.engine.TranslationFormat
 import kotlinx.coroutines.*
 import java.io.File
 import java.nio.ByteBuffer
@@ -17,17 +18,20 @@ import java.nio.ByteOrder
 /** Explicit, model-dependent acceptance; never runs as part of ordinary CI. */
 class DeviceChecks : Instrumentation() {
     private var mode = "all"
+    private var requestedModel: String? = null
+    private var requestedTranslator: String? = null
+    private val translation get() = catalog.translator(ModelSelection())
     private val catalog by lazy { ModelCatalog(targetContext) }
     private val baseline get() = catalog.recognizer(ModelSelection())
     private val multilingual get() = catalog.recognizers.single { it.id == "pengcheng-8lang-int8" }
     private val nemotron get() = catalog.recognizers.single { it.id == "nemotron-3.5-560ms-int8" }
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; start() }
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; requestedModel = arguments?.getString("model"); requestedTranslator = arguments?.getString("mt"); start() }
     private fun report(text: String) { sendStatus(0, Bundle().apply { putString("stream", "$text\n") }) }
     override fun onStart() {
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja", "nemotron", "models", "model-network"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
@@ -37,7 +41,39 @@ class DeviceChecks : Instrumentation() {
                 runBlocking { modelManagerChecks(mode == "model-network") }
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") }); return
             }
-            catalog.models.forEach { ModelPack.verify(targetContext, it) }
+            if (mode == "pipeline-model") {
+                val selected = ModelSelection(LanguagePair(Language.JA, Language.ZH), checkNotNull(requestedModel),
+                    requestedTranslator ?: ModelSelection().translatorId)
+                check(catalog.valid(selected))
+                catalog.required(selected).forEach { ModelPack.verify(targetContext, it) }
+                runBlocking {
+                    replay("ja", Language.ZH, recognizerId = selected.recognizerId, translatorId = selected.translatorId)
+                    replay("ja", Language.ZH, stopAtMs = 4500, recognizerId = selected.recognizerId, translatorId = selected.translatorId)
+                }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: pipeline-model\n") }); return
+            }
+            if (mode == "adapter") {
+                val model = catalog.models.single { it.id == requestedModel }
+                ModelPack.verify(targetContext, model)
+                runBlocking {
+                    if (model.kind == "asr") {
+                        if (Language.JA in model.languages) japaneseAsrCheck(model) else fallbackCheck(model)
+                        if (model.adapter == "qwen3-asr") qwenCompletionCheck(model)
+                    } else withContext(Dispatchers.Default) {
+                        NativeCall(120_000).use { load ->
+                            LocalTranslator(model.file(targetContext, "model"), model.translationFormat, load).use { mt ->
+                                NativeCall(60_000).use { call ->
+                                    val text = mt.translate("今日はいい天気です。", emptyList(), LanguagePair(Language.JA, Language.ZH), call)
+                                    check(text.any { it in '\u4e00'..'\u9fff' })
+                                    report("MT ${model.id}: $text ${mt.timings()}")
+                                }
+                            }
+                        }
+                    }
+                }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: adapter ${model.id}\n") }); return
+            }
+            listOf(baseline, nemotron, multilingual, translation).forEach { ModelPack.verify(targetContext, it) }
             if (mode == "all") {
                 val tokens = File(ModelPack.directory(targetContext, baseline), "tokens.txt")
                 val original = tokens.readBytes()
@@ -61,7 +97,7 @@ class DeviceChecks : Instrumentation() {
                     // Backend registration is process-wide; run this mode in its own instrumentation process.
                     android.system.Os.setenv("GGML_DISABLE_VULKAN", "1", true)
                     NativeCall(30_000).use { call ->
-                        val error = runCatching { LocalTranslator(catalog.translator.file(targetContext, "model"), call).close() }.exceptionOrNull()
+                        val error = runCatching { LocalTranslator(translation.file(targetContext, "model"), translation.translationFormat, call).close() }.exceptionOrNull()
                         check(error is IllegalStateException && error.message == "vulkan_device_unavailable") { "Unexpected missing-GPU result: $error" }
                     }
                     report("PASS: missing Vulkan device rejected without CPU-only fallback")
@@ -106,25 +142,47 @@ class DeviceChecks : Instrumentation() {
         LocalRecognizer(model.recognizerFiles(targetContext, Language.JA)).use { asr ->
             val began = SystemClock.elapsedRealtime()
             var previous = ""
+            val finalTexts = mutableListOf<String>()
             for (position in samples.indices step 1600) {
                 val end = minOf(position + 1600, samples.size)
                 delay((began + end * 1000L / 16000 - SystemClock.elapsedRealtime()).coerceAtLeast(0))
                 asr.accept(samples.copyOfRange(position, end), 16000).forEach {
                     if (it.text != previous || it.final) report("ASR ja at_ms=${end * 1000L / 16000} final=${it.final}: ${it.text}")
                     previous = it.text
+                    if (it.final) finalTexts += it.text
                 }
             }
-            asr.finish(16000).forEach { report("ASR ja tail final=${it.final}: ${it.text}") }
+            asr.finish(16000).forEach { report("ASR ja tail final=${it.final}: ${it.text}"); if (it.final) finalTexts += it.text }
+            check(finalTexts.joinToString("").contains("天気")) { "Expected weather sentence missing: $finalTexts" }
         }
     }
+    private suspend fun qwenCompletionCheck(model: ModelSpec) = withContext(Dispatchers.Default) {
+        val files = model.recognizerFiles(targetContext, Language.JA)
+        val recognizer = com.k2fsa.sherpa.onnx.OfflineRecognizer(config = com.k2fsa.sherpa.onnx.OfflineRecognizerConfig(
+            modelConfig = com.k2fsa.sherpa.onnx.OfflineModelConfig(numThreads = 1, provider = "cpu",
+                qwen3Asr = com.k2fsa.sherpa.onnx.OfflineQwen3AsrModelConfig(convFrontend = files.path("frontend"),
+                    encoder = files.path("encoder"), decoder = files.path("decoder"),
+                    tokenizer = files.paths.getValue("vocab").parent!!, maxNewTokens = 1))))
+        try {
+            val stream = recognizer.createStream()
+            try {
+                stream.setOption("language", "Japanese")
+                stream.acceptWaveform(readWave(File(targetContext.filesDir, "fixtures/ja.wav")), 16_000)
+                recognizer.decode(stream)
+                check(stream.getOption("captionglass_complete") == "0") { "Qwen accepted truncated generation as complete" }
+                report("PASS: Qwen output-budget termination is explicitly incomplete")
+            } finally { stream.release() }
+        } finally { recognizer.release() }
+    }
+
     private fun catalogChecks() {
         val initial = ModelSelection()
         check(catalog.valid(initial))
         val japanese = catalog.withLanguages(initial, LanguagePair(Language.JA, Language.ZH))
         check(japanese.recognizerId == nemotron.id && catalog.valid(japanese))
         check(!catalog.valid(japanese.copy(recognizerId = baseline.id)))
-        check(Language.FR in catalog.sources && Language.FR in catalog.translator.languages)
-        check(Language.HE !in catalog.sources && Language.HE in catalog.translator.languages)
+        check(Language.FR in catalog.sources && Language.FR in translation.languages)
+        check(Language.HE !in catalog.sources && Language.HE in translation.languages)
         check(Language.TH !in nemotron.languages && Language.ID !in nemotron.languages)
         check(nemotron.recognizerFiles(targetContext, Language.JA).language == Language.JA)
         check(multilingual.recognizerFiles(targetContext, Language.JA).language == null)
@@ -136,40 +194,47 @@ class DeviceChecks : Instrumentation() {
         check(catalog.required(initial).last() == catalog.required(japanese).last())
         check(baseline.file(targetContext, "tokens") != multilingual.file(targetContext, "tokens"))
         check(runCatching { catalog.withLanguages(initial, LanguagePair(Language.HE, Language.ZH)) }.isFailure)
-        report("PASS: catalog pins, source/target capabilities, compatible selection, shared translation model")
+        val revised = initial.copy(translatorId = "hy-mt2-streamrevise-v4-q4-k-m")
+        check(catalog.valid(revised) && catalog.required(revised).last().id == revised.translatorId)
+        check(!catalog.valid(revised.copy(languages = LanguagePair(Language.EN, Language.FR))))
+        check(catalog.withLanguages(revised, LanguagePair(Language.EN, Language.FR)).translatorId == initial.translatorId)
+        check(catalog.families.getValue("NVIDIA Parakeet").size == 3)
+        check(catalog.families.getValue("Hy-MT2").size == 2)
+        check(catalog.recognizers.filter { it.segmented }.all { model -> model.files.any { it.role == "vad" } })
+        report("PASS: catalog pins, family grouping, independent ASR/MT selection and language compatibility")
     }
     private suspend fun nativeChecks() = withContext(Dispatchers.Default) {
         val began = SystemClock.elapsedRealtime()
         val load = NativeCall(120_000)
-        val model = try { LocalTranslator(catalog.translator.file(targetContext, "model"), load) } finally { load.close() }
+        val model = try { LocalTranslator(translation.file(targetContext, "model"), translation.translationFormat, load) } finally { load.close() }
         report("MT load_ms=${SystemClock.elapsedRealtime() - began}")
         try {
-            fun translate(source: String, target: Language): String {
+            fun translate(source: String, target: Language, sourceLanguage: Language = Language.EN): String {
                 val call = NativeCall(30_000)
                 val start = SystemClock.elapsedRealtime()
-                return try { model.translate(source, emptyList(), target, call).also {
+                return try { model.translate(source, emptyList(), LanguagePair(sourceLanguage, target), call).also {
                     report("MT to-${target.code} ms=${SystemClock.elapsedRealtime() - start}: $source => $it")
                     report("MT ${model.timings()}")
                 } } finally { call.close() }
             }
             check(translate("Good subtitles give you time to read.", Language.ZH).any { it in '\u4e00'..'\u9fff' })
-            check(translate("今天天气很好，我们去公园散步。", Language.EN).contains("park", ignoreCase = true))
-            check(translate("今日はいい天気です。", Language.ZH).contains("天气"))
-            check(translate("今日はいい天気です。", Language.EN).contains("weather", ignoreCase = true))
+            check(translate("今天天气很好，我们去公园散步。", Language.EN, Language.ZH).contains("park", ignoreCase = true))
+            check(translate("今日はいい天気です。", Language.ZH, Language.JA).contains("天气"))
+            check(translate("今日はいい天気です。", Language.EN, Language.JA).contains("weather", ignoreCase = true))
             check(translate("Thank you very much.", Language.JA).any { it in '\u3040'..'\u30ff' })
-            check(translate("非常感谢。", Language.JA).any { it in '\u3040'..'\u30ff' })
+            check(translate("非常感谢。", Language.JA, Language.ZH).any { it in '\u3040'..'\u30ff' })
             check(translate("Thank you very much.", Language.FR).contains("merci", ignoreCase = true))
             check(translate("Thank you very much.", Language.KO).any { it in '\uac00'..'\ud7af' })
             check(translate("Thank you very much.", Language.AR).any { it in '\u0600'..'\u06ff' })
             NativeCall(10_000).use { call ->
                 call.cancel()
                 val start = SystemClock.elapsedRealtime()
-                check(runCatching { model.translate("Hello", emptyList(), Language.ZH, call) }.isFailure)
+                check(runCatching { model.translate("Hello", emptyList(), LanguagePair(Language.EN, Language.ZH), call) }.isFailure)
                 check(SystemClock.elapsedRealtime() - start < 1000)
             }
             NativeCall(200).use { call ->
                 val start = SystemClock.elapsedRealtime()
-                check(runCatching { model.translate("Please explain the full history of technology in great detail.", emptyList(), Language.ZH, call) }.isFailure)
+                check(runCatching { model.translate("Please explain the full history of technology in great detail.", emptyList(), LanguagePair(Language.EN, Language.ZH), call) }.isFailure)
                 report("MT deadline_return_ms=${SystemClock.elapsedRealtime() - start}")
                 check(SystemClock.elapsedRealtime() - start < 5000)
             }
@@ -179,7 +244,7 @@ class DeviceChecks : Instrumentation() {
                 val canceller = Thread { Thread.sleep(150); call.cancel() }.apply { start() }
                 try {
                     val error = runCatching { model.translate("Please translate this sentence carefully. ".repeat(180),
-                        emptyList(), Language.ZH, call) }.exceptionOrNull()
+                        emptyList(), LanguagePair(Language.EN, Language.ZH), call) }.exceptionOrNull()
                     check(error is IllegalStateException && error.message == "cancelled_or_deadline") { "Unexpected active-cancel result: $error" }
                     val elapsed = SystemClock.elapsedRealtime() - start
                     report("MT active_cancel_return_ms=$elapsed")
@@ -187,12 +252,12 @@ class DeviceChecks : Instrumentation() {
                 } finally { canceller.join() }
             }
             NativeCall(30_000).use { call ->
-                check(runCatching { model.translate("We are testing subtitles on this phone.", emptyList(), Language.ZH, call, maxTokens = 1) }.isFailure)
+                check(runCatching { model.translate("We are testing subtitles on this phone.", emptyList(), LanguagePair(Language.EN, Language.ZH), call, maxTokens = 1) }.isFailure)
             }
             check(translate("Thank you.", Language.ZH).isNotBlank())
             NativeCall(30_000).use { call ->
                 val translated = model.translate("Thank you.", listOf("We are testing local speech recognition and translation.",
-                    "Good subtitles give you time to read."), Language.ZH, call)
+                    "Good subtitles give you time to read."), LanguagePair(Language.EN, Language.ZH), call)
                 check(translated.contains("谢") && !translated.contains("字幕") && !translated.contains("背景")) { "Translated context instead of source: $translated" }
                 report("PASS: short source with background: $translated")
             }
@@ -200,7 +265,8 @@ class DeviceChecks : Instrumentation() {
         } finally { model.close() }
     }
     private suspend fun replay(name: String, target: Language, stopAtMs: Long? = null, repetitions: Int = 1,
-                               recognizerId: String = if (name == "ja") multilingual.id else baseline.id) = withContext(Dispatchers.Main) {
+                               recognizerId: String = if (name == "ja") multilingual.id else baseline.id,
+                               translatorId: String = ModelSelection().translatorId) = withContext(Dispatchers.Main) {
         val samples = withContext(Dispatchers.IO) {
             val input = readWave(File(targetContext.filesDir, "fixtures/$name.wav"))
             // Explicit test silence lets all reading pages finish after the repeated speech.
@@ -219,7 +285,7 @@ class DeviceChecks : Instrumentation() {
         var firstTranslation = 0L
         var began = 0L
         var stopping = false
-        val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId)
+        val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId, translatorId)
         val session = CaptionSession(scope, selection, overlay::pages) { state ->
             if (stopping) check(state.page == null) { "Stop restored a subtitle" }
             val elapsed = SystemClock.elapsedRealtime() - began
@@ -248,7 +314,7 @@ class DeviceChecks : Instrumentation() {
         }
         try {
             if (mode == "latency") overlay.show()
-            session.start(catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator.file(targetContext, "model"))
+            session.start(catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator(selection).file(targetContext, "model"), catalog.translator(selection).translationFormat)
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
             began = SystemClock.elapsedRealtime()

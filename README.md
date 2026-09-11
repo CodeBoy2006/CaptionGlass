@@ -2,11 +2,11 @@
 
 本地优先的 Android 跨应用双语字幕层。让原文及时出现，让译文稳定成句，让连续观看时的字幕仍然跟得上。
 
-**已接入模型管理、Nemotron 日语流式识别与多语种翻译。** 中英可使用 X-ASR；Nemotron 3.5 支持日语等 18 种输入，PengChengStarling 保留八语种支持。识别模型均使用 CPU，共用的 Hy-MT2 使用 Vulkan GPU 翻译。需要支持 Vulkan 1.2 及所需计算能力的 arm64 设备；不支持时明确报告模型加载失败，不自动改用纯 CPU 翻译。支持播放音频捕获、双语悬浮窗、应用内模型下载与文件夹导入。仅下载模型时联网，语音与文字不上传，不保存原始音频。当前为实验版本，设备兼容性、加速收益和长时表现以 [验收记录](docs/validation.md) 为准。
+**支持按系列管理、独立下载和切换识别／翻译模型。** 识别包括 X-ASR、Nemotron、PengChengStarling、Qwen3-ASR、Japanese Zipformer Base 与 NVIDIA Parakeet；翻译包括 Hy-MT2、StreamRevise v4、MiLMMT-46、Murasaki v0.2/v0.3。ASR 固定使用 CPU，MT 使用 Vulkan GPU。需要支持 Vulkan 1.2 及所需算子的 arm64 设备，不自动切到云端或纯 CPU 翻译。新增型号、来源、限制和实测范围见 [模型支持表](docs/model-support.md)。当前为实验版本；权重可安装不代表实时性能或广泛质量达标。
 
 ## 构建与运行
 
-需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主机 Clang（macOS Command Line Tools／Linux clang）和 Python 3。先设置 `JAVA_HOME` 和 `ANDROID_HOME`。使用 checked-in Gradle wrapper。准备脚本下载 SHA-256 固定的 native 源码、运行库和 Khronos 头文件，构建 shaderc v2025.3 及其 matched DEPS，并应用仓库内的 Vulkan 清理补丁。首次准备需要编译宿主 shader 工具；NDK 自带旧版 glslc 不支持所需的协作矩阵 shader。权重与构建产物不入 Git。
+需要 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主机 Clang（macOS Command Line Tools／Linux clang）和 Python 3。先设置 `JAVA_HOME` 和 `ANDROID_HOME`。使用 checked-in Gradle wrapper。准备脚本下载 SHA-256 固定的 native 源码、ONNX Runtime 和 Khronos 头文件，构建 shaderc v2025.3 及其 matched DEPS，并应用仓库内的 Vulkan 清理与 Qwen 完整性补丁。sherpa JNI 从固定源码构建；LiteRT 2.2.0 通过 Gradle 随 APK 打包。首次准备需要编译宿主 shader 工具；NDK 自带旧版 glslc 不支持所需的协作矩阵 shader。权重与构建产物不入 Git。
 
 ```sh
 sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
@@ -20,30 +20,24 @@ macOS 可设置 `JAVA_HOME="$(brew --prefix openjdk@17)"`、`ANDROID_HOME="$HOME
 ## 准备模型与选择语言
 
 ```sh
-./gradlew downloadModels
-# 也可只下载一项：
+./gradlew downloadModels  # 默认仅下载 X-ASR 与 Hy-MT2 基础组合
+# 其他型号按需下载，完整 ID 见模型支持表：
 ./gradlew downloadModels -Pmodel=nemotron-3.5-560ms-int8
-./gradlew downloadModels -Pmodel=hy-mt2-1.8b-q4-k-m
+./gradlew downloadModels -Pmodel=qwen3-asr-0.6b-int8
+./gradlew downloadModels -Pmodel=milmmt-46-1b-v1-q4-k-m
 ```
 
 开发任务按不可变 revision 下载、校验文件大小与 SHA-256，输出到 `artifacts/models/<模型 ID>/`。应用内下载使用同一份固定清单。
 
-| 模型 ID | 输入或输出能力 | 文件与大小 |
-| --- | --- | --- |
-| `x-asr-zh-en-480ms` | 识别中文、英语 | 4 文件，约 615 MB |
-| `nemotron-3.5-560ms-int8` | 识别日语等 18 种语言；CPU、固定输入语言、560 ms 流式分块 | 4 文件，约 683 MB |
-| `pengcheng-8lang-int8` | 识别日语、中文、英语、俄语、越南语、泰语、印尼语、阿拉伯语 | 4 文件，约 339 MB |
-| `hy-mt2-1.8b-q4-k-m` | 多语翻译，共用一份权重 | 1 文件，约 1.13 GB |
+在“设置 → 模型管理”按语音识别、翻译浏览系列；同系列只有一行，进入后分别管理每个型号。当前选择的系列优先显示。各型号独立保存文件、校验状态和安装占用，每个会话只加载一个 ASR 和一个 MT。
 
-在“设置 → 模型管理”准备模型；首页的“准备识别模型／准备翻译模型”也会进入这里。当前字幕所需的识别模型与共用翻译模型排在最前，下面列出其他识别模型。每项显示用途、语言数量、大小、安装状态；已安装且兼容的识别模型可直接选择。
-
-- **下载：** 点击“下载模型”，从固定的 Hugging Face 文件地址获取。显示下载／校验进度，可取消；完成大小与 SHA-256 校验后才启用。下载期间保持应用开启；本版不保证进程被系统关闭后的后台续传，重开会清理未完成的临时文件，重试从头下载。
-- **导入：** 将开发任务下载的子文件夹复制到手机，点击“导入模型”，查看所需文件名后选择直接包含这些文件的文件夹。文件名、大小与哈希必须匹配 [清单](models/catalog.json)。
-- **校验与删除：** 每项的更多菜单提供详情、重新校验和删除。重新校验失败或被取消后，需要再次校验或重新安装；删除当前必需模型前会提示无法开启字幕，并要求确认。共用的 Hy-MT2 只保存一份。
+- **下载：** 型号行点击“下载”。完成固定大小与 SHA-256 校验后才就绪，可取消；外层仍显示进行中的操作。更多菜单可重新下载，损坏文件无需先删除。下载期间保持应用开启，进程中断后从头重试。
+- **导入：** 更多菜单选择“导入模型”，选择 `artifacts/models/<模型 ID>/` 复制到手机后的文件夹。所需文件名见详情，全部平铺；Qwen tokenizer 三文件也位于包根目录，VAD 固定名为 `silero-vad.onnx`。
+- **选用：** 安装且兼容当前语言方向的型号可选用。识别和翻译各有独立偏好；选用不会自动下载。更多菜单提供校验、来源、详情和删除；删除前确认，其他型号不受影响。
 
 下载／导入先检查可分配空间，并保留原模型直到新文件完整校验、原子激活。替换需额外一份模型暂存空间及少量余量。失败或取消不覆盖旧模型；进程中断会恢复旧模型或保留已经激活的新模型。导入、下载、校验、删除与字幕会话互斥，不会在推理时修改模型文件。
 
-首页左侧选择“听到的语言”，右侧选择“字幕语言”，支持中文名称、原文名称、英文名称或代码搜索。源语言只列出识别模型支持的 20 项；目标语言按 Hy-MT2 官方清单列出 38 个语言／文字变体选项（包含繁体中文和粤语，不表示已逐一验收）。当前模型不支持新输入语言时自动匹配：从中英模型切到日语会匹配 Nemotron；已有兼容模型选择会保留。下方模型行可手动选择兼容模型；切换不会自动下载文件。⇄ 仅在目标语言也支持识别时可用。选择会在重启后保留；授权、模型管理操作、运行和回收期间锁定选择，每次会话使用固定快照。
+首页选择输入和字幕语言，支持名称或代码搜索。能力按 ASR 输入、MT 源语言和目标语言的交集过滤；不存在可用组合的方向不显示。当前模型不兼容时自动匹配目录中兼容的模型，兼容的既有选择保留。首页模型行进入管理页；交换仅在双向均有模型时可用。两个模型 ID 和语言方向随重启保存，授权、安装、运行和回收期间锁定，每次会话使用固定快照。
 
 日语采用句末标点或声学 endpoint 提交，避免按英文等待阈值截断句尾否定；无停顿长句会增加等待。汉字、假名和韩文采用同一保守阅读计时，仍需独立校准。新增多语种在界面标为实验支持，模型作者的质量或速度报告不等同于本应用真机验收，证据边界见 [验收文档](docs/validation.md)。
 
@@ -56,12 +50,20 @@ macOS 可设置 `JAVA_HOME="$(brew --prefix openjdk@17)"`、`ANDROID_HOME="$HOME
 核心检查不需要模型或设备。真实推理检查使用另外的测试 APK，包含 macOS 合成语音，没有用户媒体；不能将它当成广泛准确率基准。
 
 ```sh
+./gradlew downloadModels -Pmodel=nemotron-3.5-560ms-int8
+./gradlew downloadModels -Pmodel=pengcheng-8lang-int8
 bash scripts/prepare-fixtures.sh  # macOS say + ffmpeg
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
 bash scripts/device-check.sh <已明确选择且解锁的测试设备序列号>
 ```
 
-脚本会安装两个调试 APK、向应用私有目录部署约 2.77 GB 的四套独立模型文件与中英日合成音频，并运行目录规则、Nemotron 与原有中英日识别、法韩阿目标翻译、1× 语速回放、取消/停止、输出预算、48 kHz 重采样与尾部冲刷检查。厂商系统可能逐次要求确认 USB 安装；验收页面会保持亮屏，结束后解除。跨应用捕获和悬浮窗还需要系统授权后的实际 UI 验收，步骤与实测结果见 [验收文档](docs/validation.md)。
+基础验收脚本会安装两个调试 APK、向应用私有目录部署约 2.77 GB 的四套独立模型文件与中英日合成音频，并运行目录规则、Nemotron 与原有中英日识别、法韩阿目标翻译、1× 语速回放、取消/停止、输出预算、48 kHz 重采样与尾部冲刷检查。厂商系统可能逐次要求确认 USB 安装；验收页面会保持亮屏，结束后解除。跨应用捕获和悬浮窗还需要系统授权后的实际 UI 验收，步骤与实测结果见 [验收文档](docs/validation.md)。
+
+单型号验收先将对应 `artifacts/models/<ID>` 平铺目录部署到应用的 `files/models/<ID>`，并部署固定语音夹具，再运行：
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode adapter -e model japanese-zipformer-base-fp16 com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
 
 模型管理的轻量回归可独立运行：
 

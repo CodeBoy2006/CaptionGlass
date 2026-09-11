@@ -13,8 +13,6 @@ fetch() {
   mkdir -p "$destination"
   tar -xf "$archive" -C "$destination" --strip-components=1
 }
-fetch sherpa-android.tar.bz2 7583ca385ae7d981e65468455c2ea2c9f2da383921dccfc5658d0dc19d309e6f \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-android-static-link-onnxruntime.tar.bz2 artifacts/deps/sherpa-android
 fetch sherpa-source.tar.gz 0a8db6c55dd318f4a688faba85f7760b99a6c92e8ef8864479d418531bee1ac2 \
   https://codeload.github.com/k2-fsa/sherpa-onnx/tar.gz/11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf artifacts/deps/sherpa-source
 fetch llama-source.tar.gz 2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43 \
@@ -44,7 +42,4 @@ cmake_command="${ANDROID_HOME:?Set ANDROID_HOME}/cmake/3.22.1/bin/cmake"
   -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DSHADERC_SKIP_COPYRIGHT_CHECK=ON \
   -DSHADERC_SKIP_INSTALL=OFF
 "$cmake_command" --build artifacts/deps/shaderc-build --target glslc_exe --parallel 4
-mkdir -p artifacts/deps/sherpa-kotlin
-for file in OnlineRecognizer OnlineStream FeatureConfig HomophoneReplacerConfig QnnConfig; do
-  cp "artifacts/deps/sherpa-source/sherpa-onnx/kotlin-api/$file.kt" artifacts/deps/sherpa-kotlin/
-done
+bash scripts/prepare-sherpa.sh

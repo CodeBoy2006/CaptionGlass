@@ -36,18 +36,18 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             LanguagePill(pair.source.label, R.string.source_language, enabled, { chooser = 1 }, Modifier.weight(1f))
             FilledTonalIconButton({ onSelect(catalog.withLanguages(selection, pair.swapped())) },
-                Modifier.padding(horizontal = 8.dp).size(48.dp), enabled = enabled && pair.target in catalog.sources) {
+                Modifier.padding(horizontal = 8.dp).size(48.dp), enabled = enabled && pair.target in catalog.sources && pair.source in catalog.targets(pair.target)) {
                 Icon(painterResource(R.drawable.ic_swap), stringResource(R.string.swap_direction))
             }
             LanguagePill(pair.target.label, R.string.target_language, enabled, { chooser = 2 }, Modifier.weight(1f))
         }
-        Surface({ chooser = 3 }, enabled = enabled, shape = RoundedCornerShape(14.dp),
+        Surface(onManageModels, enabled = enabled, shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow) {
             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Icon(painterResource(R.drawable.ic_package), null, Modifier.size(20.dp))
                 Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                    Text(recognizer.name, style = MaterialTheme.typography.labelLarge)
+                    Text("${recognizer.family} · ${catalog.translator(selection).family}", style = MaterialTheme.typography.labelLarge)
                     Text(stringResource(if (catalog.required(selection).all { it.id in installed }) R.string.models_ready else R.string.models_needed),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -56,7 +56,7 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
         }
         if (pair.source != com.captionglass.engine.Language.EN && pair.source != com.captionglass.engine.Language.ZH ||
             pair.target != com.captionglass.engine.Language.EN && pair.target != com.captionglass.engine.Language.ZH ||
-            recognizer.id != ModelSelection().recognizerId)
+            recognizer.id != ModelSelection().recognizerId || selection.translatorId != ModelSelection().translatorId)
             Text(stringResource(R.string.experimental_languages), Modifier.padding(horizontal = 4.dp),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -69,7 +69,10 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
                 Modifier.padding(top = 8.dp, bottom = 16.dp), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (chooser < 3) {
-                val languages = if (chooser == 1) catalog.sources else catalog.translator.languages.filter { it != pair.source }
+                val languages = if (chooser == 1) catalog.sources.filter { language ->
+                    val next = pair.withSource(language)
+                    next.target in catalog.targets(next.source)
+                } else catalog.targets(pair.source)
                 OutlinedTextField(search, { search = it }, Modifier.fillMaxWidth(), singleLine = true,
                     label = { Text(stringResource(R.string.search_language)) })
                 val matches = languages.filter {
@@ -87,26 +90,6 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
                             })
                     }
                 }
-            } else LazyColumn(Modifier.heightIn(max = 400.dp).padding(bottom = 16.dp)) {
-                items(catalog.recognizers, key = { it.id }) { model ->
-                    val compatible = pair.source in model.languages
-                    val selected = model.id == selection.recognizerId
-                    ListItem(headlineContent = { Text(model.name) }, supportingContent = {
-                        Column {
-                            Text(model.languages.take(3).joinToString(" · ") { it.label } +
-                                if (model.languages.size > 3) stringResource(R.string.model_more_languages, model.languages.size) else "")
-                            Text("${modelSize(model.size)} · " + stringResource(if (compatible) {
-                                if (model.id in installed) R.string.pack_ready else R.string.pack_missing
-                            } else R.string.model_incompatible))
-                        }
-                    }, trailingContent = { RadioButton(selected, null, enabled = compatible) },
-                        modifier = Modifier.selectable(selected, enabled = compatible, role = Role.RadioButton) {
-                            onSelect(selection.copy(recognizerId = model.id)); chooser = 0
-                        })
-                }
-                item { TextButton({ chooser = 0; onManageModels() }) { Text(stringResource(R.string.settings_pack)) } }
-                item { Text(stringResource(R.string.shared_translator), Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
     }

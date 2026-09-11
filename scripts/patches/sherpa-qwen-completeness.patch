@@ -1,0 +1,7 @@
+--- a/sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.cc
++++ b/sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.cc
+@@ -1104,0 +1105,2 @@
++  // CaptionGlass must distinguish EOS from budget/repetition truncation.
++  stream->SetOption("captionglass_complete", next_id == eos_id ? "1" : "0");
+@@ -1156,0 +1159 @@
++  stream->SetOption("captionglass_complete", "0");

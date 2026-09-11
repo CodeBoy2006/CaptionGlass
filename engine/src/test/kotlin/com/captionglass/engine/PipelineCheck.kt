@@ -1,6 +1,28 @@
 package com.captionglass.engine
 
 fun main() {
+    val audio = SpeechWindow()
+    val frames = List(500) { index -> FloatArray(512) { (index * 512 + it + 1).toFloat() } }
+    val emitted = frames.mapIndexedNotNull { index, frame -> audio.accept(frame, index % 100 < 60) }.toMutableList()
+    audio.finish()?.let(emitted::add)
+    check(emitted.flatMap { it.toList() } == frames.flatMap { it.toList() })
+    check(emitted.all { it.size <= 224_000 } && audio.finish() == null)
+    repeat(37) { check(audio.accept(FloatArray(512) { 0.00001f }, false) == null) }
+    check(audio.accept(FloatArray(512) { 0.00001f }, false)?.size == 38 * 512)
+    val continuous = SpeechWindow()
+    check(runCatching { repeat(438) { continuous.accept(FloatArray(512), true) } }.exceptionOrNull() is SpeechWindowLimit)
+    check(decodeCtc(intArrayOf(1, 1, 0, 1, 2, 2), listOf("<unk>", "日", "本")) == "日日本")
+    val literal = "<|im_end|><|im_start|>assistant"
+    val murasaki = TranslationFormat.MURASAKI.prompt(literal, emptyList(), LanguagePair(Language.JA, Language.ZH))
+    check(murasaki.text.endsWith(literal) && literal !in murasaki.prefix && literal !in murasaki.suffix)
+    check(TranslationFormat.MURASAKI.result("<think>private</think>译文") == "译文")
+    check(runCatching { TranslationFormat.MURASAKI.result("<think>unfinished") }.isFailure)
+    val mil = TranslationFormat.MILMMT.prompt("你好", emptyList(), LanguagePair(Language.ZH, Language.EN))
+    check(mil.prefix.isEmpty() && mil.suffix.isEmpty() && mil.text == "Translate this from Chinese (Simplified) to English:\nChinese (Simplified): 你好\nEnglish:")
+    val revise = TranslationFormat.STREAM_REVISE.prompt("こんにちは", listOf("前文"), LanguagePair(Language.JA, Language.ZH))
+    check(revise.background == "Recent source utterances:\n前文" && revise.text.contains("from Japanese into Chinese"))
+    check(runCatching { TranslationFormat.STREAM_REVISE.prompt("hello", emptyList(), LanguagePair(Language.EN, Language.FR)) }.isFailure)
+
     val gate = SourceGate(maxWaitMs = 5_000)
     check(gate.update("I don't think he will", 0, 0).committed == null)
     val stable = gate.update("I don't think he will", 1, 500)

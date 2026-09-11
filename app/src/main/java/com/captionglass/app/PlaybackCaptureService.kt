@@ -43,7 +43,8 @@ class PlaybackCaptureService : Service() {
         val selection = runCatching {
             ModelSelection(LanguagePair(checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_SOURCE))),
                 checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_TARGET)))),
-                checkNotNull(intent.getStringExtra(EXTRA_RECOGNIZER))).also { check(catalog.valid(it)) }
+                checkNotNull(intent.getStringExtra(EXTRA_RECOGNIZER)),
+                checkNotNull(intent.getStringExtra(EXTRA_TRANSLATOR))).also { check(catalog.valid(it)) }
         }.getOrElse {
             mutableState.value = CaptureState(status = CaptureStatus.START_FAILED)
             stopSelf()
@@ -74,7 +75,7 @@ class PlaybackCaptureService : Service() {
                     }
                     check(!stopping) { "字幕已停止" }
                     try { pipeline.start(catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService, selection.languages.source),
-                        catalog.translator.file(this@PlaybackCaptureService, "model")) }
+                        catalog.translator(selection).file(this@PlaybackCaptureService, "model"), catalog.translator(selection).translationFormat) }
                     catch (_: Exception) {
                         if (!stopping) requestStop(CaptureStatus.LOAD_FAILED)
                         return@launch
@@ -208,6 +209,7 @@ class PlaybackCaptureService : Service() {
         const val EXTRA_SOURCE = "source_language"
         const val EXTRA_TARGET = "target_language"
         const val EXTRA_RECOGNIZER = "recognizer_id"
+        const val EXTRA_TRANSLATOR = "translator_id"
         const val ACTION_STOP = "com.captionglass.STOP_CAPTURE"
         private val mutableState = MutableStateFlow(CaptureState())
         val state = mutableState.asStateFlow()

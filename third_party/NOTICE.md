@@ -6,7 +6,7 @@ The following upstream components keep their own licenses.
 | Component | Pinned source | License |
 | --- | --- | --- |
 | sherpa-onnx Android JNI and Kotlin API | `k2-fsa/sherpa-onnx` commit `11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf` (v1.13.8) | Apache-2.0 |
-| ONNX Runtime, linked into sherpa JNI | v1.28.2, included in the hash-pinned sherpa Android archive | MIT and bundled third-party notices |
+| ONNX Runtime, linked into sherpa JNI | v1.28.2, static archive SHA-256 pinned by the fixed sherpa source | MIT and bundled third-party notices |
 | llama.cpp / ggml CPU and Vulkan | `ggml-org/llama.cpp` commit `5266f24da75dc449bd56cbed7addb9c8e4a6a73e` (v0.4.0), plus `scripts/patches/llama-vulkan-cleanup.patch` | MIT |
 | Vulkan-Headers (including Vulkan-Hpp) | Khronos `vulkan-sdk-1.4.321.0`, archive hash in prepare-native.sh | Apache-2.0 OR MIT for compiled headers |
 | SPIRV-Headers | Khronos commit `2a611a970fdbc41ac2e3e328802aed9985352dca`, shared with shaderc | MIT; source exceptions listed in adjacent license |
@@ -25,7 +25,7 @@ acceptance; the repository contains their generation script, not audio recording
 Reproducible native archive URLs and SHA-256 values are in `scripts/prepare-native.sh`.
 The selected sherpa Kotlin files are copied unchanged. The tracked llama.cpp patch
 contains synchronization exceptions during context and Vulkan backend teardown;
-all other integration behavior resides in CaptionGlass's bindings. Android provides
+the Qwen patch exposes EOS completion through an existing stream option. Other integration behavior resides in CaptionGlass's bindings. Android provides
 the Vulkan loader/driver; the pinned shader compiler is built locally and is not
 bundled in the APK.
 
@@ -37,3 +37,23 @@ Nemotron license source: https://openmdw.ai/license/1-1/ (retrieved 2026-09-11).
 The converted weights retain NVIDIA model origin; official sherpa export workflow
 publishes the matched files under csukuangfj2. Catalog file URLs, hashes, and
 revisions identify the exact separately downloaded artifacts.
+
+## Optional model families and runtime
+
+All exact artifact revisions, names and hashes are in `models/catalog.json`.
+
+| Component | Source / terms |
+| --- | --- |
+| LiteRT 2.2.0 (bundled CPU runtime) | Google `com.google.ai.edge.litert:litert:2.2.0`; Apache-2.0; https://github.com/google-ai-edge/LiteRT |
+| Silero VAD | `onnx-community/silero-vad` pinned ONNX conversion of snakers4/silero-vad; MIT |
+| Qwen3-ASR 0.6B / 1.7B | Qwen upstream, pantinor/thieunv sherpa conversions; Apache-2.0 |
+| Japanese Zipformer Base | reazon-research upstream, litert-community conversion; Apache-2.0 |
+| NVIDIA Parakeet v2/v3 / Japanese | NVIDIA upstream, csukuangfj sherpa exports; CC-BY-4.0: https://creativecommons.org/licenses/by/4.0/ |
+| Hy-MT2 StreamRevise v4 | febilly fine-tune and GGUF; Apache-2.0 |
+| MiLMMT-46 | Xiaomi Research upstream; mradermacher GGUF conversions; Gemma terms: https://ai.google.dev/gemma/terms |
+| Murasaki v0.2/v0.3 | Murasaki-Project upstream; shoutmon backup and mradermacher conversion; CC-BY-NC-SA-4.0: https://creativecommons.org/licenses/by-nc-sa/4.0/ |
+
+Murasaki is noncommercial under its weight license. Community conversions and backups
+are identified as such in the manager; they are not described as official releases.
+The v0.2 8B Q6_K backup hash matches the upstream original LFS pointer. Exact source
+attribution and verification limits are recorded in `docs/model-support.md`.

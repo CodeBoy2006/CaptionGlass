@@ -12,8 +12,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +33,21 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
                             onOverlaySettings: () -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+    var family by rememberSaveable { mutableStateOf<String?>(null) }
+    BackHandler(family != null) { family = null }
+    if (family != null) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton({ family = null }) { Icon(painterResource(R.drawable.ic_chevron_right), stringResource(R.string.action_back), Modifier.rotate(180f)) }
+                Text(checkNotNull(family), style = MaterialTheme.typography.titleLarge)
+            }
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp)) {
+                ModelManager(pack, catalog, selection, localModels, availableBytes, busy,
+                    onImport, onSelect, onDownload, onCheck, onRemove, family) { family = it }
+            }
+        }
+        return
+    }
     val version = remember {
         runCatching {
             if (Build.VERSION.SDK_INT >= 33) context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
@@ -44,7 +61,7 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
 
         Section(R.string.settings_pack) {
             ModelManager(pack, catalog, selection, localModels, availableBytes, busy,
-                onImport, onSelect, onDownload, onCheck, onRemove)
+                onImport, onSelect, onDownload, onCheck, onRemove, null) { family = it }
         }
 
         Section(R.string.settings_overlay) {

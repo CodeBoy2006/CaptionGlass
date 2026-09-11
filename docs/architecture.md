@@ -54,11 +54,11 @@ Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子�
 
 ### 3.2 音频与时间
 
-优先请求 16 kHz、单声道、PCM16；失败后请求 48 kHz。每次读取最多 100 ms，缓冲最多 100 帧，即至多 10 秒。缓冲满时显式结束会话并说明识别跟不上，绝不 `DROP_OLDEST`。不通过 VAD 剔除低音量片段；幅度阈值只用于“未收到声音”的提示，不推断 DRM。
+优先请求 16 kHz、单声道、PCM16；失败后请求 48 kHz。每次读取最多 100 ms，缓冲最多 100 帧，即至多 10 秒。缓冲满时显式结束会话并说明识别跟不上，绝不 `DROP_OLDEST`。流式 ASR 不通过 VAD 剔除低音量片段；新增分段 ASR 用 Silero VAD 判断停顿，但不剔除任何非零音频。幅度阈值只用于“未收到声音”的提示，不推断 DRM。
 
 sherpa 内部有状态 `LinearResample` 将 48 kHz 输入转换到 16 kHz 特征率。会话内不切换输入率。真实采集按读取帧数计算样本时间；队列等待用 `SystemClock.elapsedRealtime()`。测试回放按样本数与同一单调时钟以 1× 速度供给。片段 `endMs` 是语义确认时已处理的样本位置，并非人工标注的发音结束位置，更不是源视频时间轴。当前不做硬件时钟漂移校准，长时漂移验收属于 M2。
 
-实际 EOF/停止时才追加 960 ms 零样本并 `inputFinished()`，用于冲刷模型尾部；正常采集不注入静音。声学 endpoint 后提取最终残段，再使用对应 sherpa 实现的 stream reset：Zipformer 保留其声学上下文，NeMo 会重建编码器／解码器缓存，流的语言选项保留。下游语义提交从不 reset ASR。
+流式 ASR 在实际 EOF/停止时才追加 960 ms 零样本并 `inputFinished()`，用于冲刷模型尾部；正常采集不注入静音。声学 endpoint 后提取最终残段，再使用对应 sherpa 实现的 stream reset：Zipformer 保留其声学上下文，NeMo 会重建编码器／解码器缓存，流的语言选项保留。下游语义提交从不 reset ASR。
 
 ### 3.3 身份、语义与修订
 
@@ -98,9 +98,9 @@ Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，
 | MT | Hy-MT2 1.8B Q4_K_M；llama.cpp v0.4.0 / `5266f24…` + 仓库 Vulkan 清理补丁；首个 Vulkan 设备，全部层／KV／支持的算子卸载；剩余 CPU 算子 3 线程；context 2,048、每次提交 / batch / ubatch 8 |
 | Android native | NDK 27.1.12297006、CMake 3.22.1、arm64-v8a / ARMv8-A 基线；16 KB LOAD 对齐 |
 
-sherpa 官方 Android archive 和源代码 tar 的哈希固定在 `scripts/prepare-native.sh`。直接复用同版本 Kotlin JNI 声明，不手写另一套 C API。llama.cpp CPU/Vulkan 后端静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。显式选择 Vulkan 设备，不支持 Vulkan 1.2、算子／分配失败时沿现有加载失败或未翻译路径反馈；不静默切回纯 CPU 翻译。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
+sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan 后端静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。显式选择 Vulkan 设备，不支持 Vulkan 1.2、算子／分配失败时沿现有加载失败或未翻译路径反馈；不静默切回纯 CPU 翻译。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
 
-翻译使用模型文件内的 Hy-MT2 单用户模板。BOS、角色分隔符单独识别为 special tokens；源文本与历史始终 `parse_special=false`，不能注入角色控制 token。采样固定 top-k 20、top-p 0.6、temperature 0.7、repeat penalty 1.05。JNI 用 UTF-8 byte arrays 传输输入输出，不用 modified UTF-8 的 `NewStringUTF` 传中文结果。[X-ASR 模型卡](https://huggingface.co/GilgameshWind/X-ASR-zh-en)、[Hy-MT2 GGUF](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF)
+`TranslationFormat` 按固定型号生成提示：Hy-MT2 保留原采样；StreamRevise 使用作者的首段／原文历史格式与 greedy；MiLMMT 使用源、目标全名的裸 completion，不加 BOS 或聊天模板；Murasaki 使用已检查 GGUF 的 Qwen3 ChatML、官方 short 系统提示和关闭思考的后缀。后三者 greedy。角色控制符与可信系统提示单独分词，语音与历史始终 `parse_special=false`。空译文、未正常结束和未闭合思考均进入明确失败终态。JNI 用 UTF-8 byte arrays，不用 modified UTF-8 传中文。各来源、精确型号及验收范围见 [模型支持表](model-support.md)。
 
 选型依据：PengChengStarling 提供真正的八语种流式 Transducer，sherpa 项目已有对应的 matched int8 文件与导出脚本，可复用 OnlineRecognizer 及现有音频缓冲、端点、停止逻辑。PengChengStarling 采用固定运行库的通用解码接口；对该模型，源语言选择用于能力匹配和分句，并不强制声学语言识别。上游定制服务另有 langtag 初始化接口，固定 sherpa Zipformer Kotlin 接口未提供该能力。本次不手改预编译 JNI 或偷偷变更权重。合成日语对照中 beam 比 greedy 保留更多内容，但仍有错误和漏词，详见验收记录。[上游模型卡](https://huggingface.co/stdo/PengChengStarling)、[sherpa 转换文件](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10)、[上游部署与 langtag 说明](https://github.com/PCL-Voice/PengChengStarling)
 
@@ -110,17 +110,25 @@ Hy-MT2 的官方支持表列出 38 个语言／文字变体代码，本次按完
 
 ### 4.1 选择与模型管理
 
-`Language` 固定 Hy-MT2 官方清单的语言代码、提示词全名和显示名称；输入能力与输出能力分别过滤。`ModelSelection` 保存源、目标及识别模型 ID；同语方向、未知代码、模型不支持的输入都被拒绝。在现选模型不兼容时匹配目录中的第一个兼容模型；从中英 X-ASR 切到日语时选择 Nemotron，已有兼容选择继续保留，目标不具备 ASR 能力时禁用交换。界面不暴露线程、量化或后端参数。SharedPreferences 保存这三个简单偏好，权限或 SAF 回调等待状态随 Activity 保存；文件夹回调绑定发起时的模型 ID。运行、授权、下载／导入／校验／删除、回收期间均锁定选择。
+`Language` 固定模型联合语言表；能力仍由每个型号自己的源／目标集合约束。`ModelSelection` 保存语言方向、ASR ID 和 MT ID。同语方向、未知代码、不兼容组合被拒绝。更改语言时保留兼容的既有选择，否则匹配第一个兼容型号；语言选择器只提供有完整识别／翻译组合的方向。SharedPreferences 保存四项偏好；权限、SAF 回调绑定发起时的模型 ID，选择在会话和安装操作期间锁定。
 
 服务再次验证 Intent 中的代码和模型能力，创建不可变会话快照。通知与界面显示该快照，ASR 从清单文件角色得到路径，MT 使用固定目标语言全名生成提示词；句柄和 worker 所有权不变。
 
-模型管理位于既有设置页，按当前所需识别模型、共用翻译模型、其他识别模型排序。主列表显示用途、能力数量、文件大小、就绪状态与空间占用；详细语言、固定文件名、版本及许可在详情中。未安装模型提供下载和导入；已就绪兼容模型可选用。更多菜单提供重新校验与确认删除。首页缺少模型时跳转管理页，选择模型不会自动发起下载。
+模型管理位于设置页，按 ASR／MT 分类，每系列一行，当前选择的系列优先。进入后各型号独立下载、导入、校验、选择和删除；容量和流式／分段能力直接显示，语言列表、来源、许可和文件名收进详情。更多菜单支持原地重新下载损坏模型，下载进度跨层级可见。仅稳定的模型身份、适配器、运行库和文件信息参与安装指纹，显示名称不会使安装失效。
 
 ModelPack 在 Main 入口同步占用唯一操作槽，以进程级协程执行 IO，Activity 重建不会丢失进行中的状态。字幕服务也检查该槽；服务 active 保持到 native 完全释放。网络只用 GET 获取 APK 清单中的 HTTPS 固定文件，允许最多六次请求链且拒绝明文降级，不添加 HTTP 服务、账号或云端识别。网络连接／读取超时均为 15 秒；取消保持 busy，直至 IO 返回并清理完临时文件。该简单下载器没有跨进程续传，界面明确提示保持应用开启。
 
-下载与 SAF 导入共用安装路径：StorageManager 检查和分配所需空间，文件复制到私有 `files/models/<id>-staging`，逐文件限制长度、同步写盘，全部尺寸和 SHA-256 通过后写入清单校验标记，再以同目录 rename 激活。替换期间保留旧目录；失败／取消清理 staging，进程中断通过 backup 恢复。启动时恢复安装并清理已知模型的遗留 staging／backup／deleting。每项模型的 tokens 独立，MT 权重一份。每次会话前仍重新哈希所需模型；用户重新校验一开始就撤销旧标记，失败或取消不会继续显示可用。
+下载与 SAF 导入共用安装路径：StorageManager 检查和分配所需空间，文件复制到私有 `files/models/<id>-staging`，逐文件限制长度、同步写盘，全部尺寸和 SHA-256 通过后写入清单校验标记，再以同目录 rename 激活。替换期间保留旧目录；失败／取消清理 staging，进程中断通过 backup 恢复。启动时恢复安装并清理已知模型的遗留 staging／backup／deleting。每项模型的文件独立，ASR 可含各自固定的 VAD 数据，MT 每个型号各一份。每次会话前仍重新哈希所需模型；用户重新校验一开始就撤销旧标记，失败或取消不会继续显示可用。
 
 删除先将目标 rename 为 deleting，再递归清理，避免中断后把半删目录认作安装；不会自动更换识别模型。删掉当前必需模型后首页要求重新准备，其他模型与字幕记录保留。应用申请 INTERNET 仅用于用户主动获取模型，语音和字幕不上传、不保存原始音频、不动态下载代码。运行库仍由 APK 提供。跨进程断点续传和后台任务恢复留待实际需要；native/model 许可见 `third_party/`。
+
+### 4.2 分段 ASR
+
+Qwen3-ASR 和 Parakeet 复用固定 sherpa OfflineRecognizer；Japanese Zipformer Base 是 raw-waveform CTC，使用随 APK 打包的 LiteRT 2.2.0 Interpreter CPU 单线程。不是旧版 ReazonSpeech transducer 的别名。Qwen 使用英文语言全名，tokenizer 文件从模型目录读取；Parakeet TDT、日语 CTC 各使用正确配置。
+
+一个 ASR worker 同步执行 VAD 与识别。512 样本一帧，Silero 概率仅用于寻找约 1.2 秒停顿，不丢弃非零音频；精确全零帧无需推理。缓冲最多 14 秒；超过上限仍无完整停顿时明确停止并提示切换流式模型，不能将人为截断的句尾标为 final。48 kHz 通过同一固定 sherpa LinearResample 源码的薄 JNI 包装连续重采样，停止冲刷余量。结束只识别尚未提交的尾部，不重新提交已完成窗口。Japanese Zipformer 按官方导出约定追加两侧各 0.5 秒模型内部 padding、生成四级 attention mask，并按 blank=0 的 CTC 合并规则解码。
+
+分段模型没有临时原文；长停顿依赖、短句质量、VAD 错判和 CPU 推理积压均需单独评价，不宣称等同于真正流式识别。它们沿用现有有界 PCM 通道和显式 overrun/识别失败路径，不丢帧、不切云端。
 
 ## 5. 后续工作
 

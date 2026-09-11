@@ -6,57 +6,71 @@ import java.io.Closeable
 import java.io.File
 
 data class Hypothesis(val text: String, val final: Boolean)
-data class RecognizerFiles(val encoder: File, val decoder: File, val joiner: File, val tokens: File,
+data class RecognizerFiles(val paths: Map<String, File>, val adapter: String,
                            val decodingMethod: String, val language: Language? = null) {
     init { require(decodingMethod in setOf("greedy_search", "modified_beam_search")) }
+    fun path(role: String) = paths.getValue(role).path
 }
 
 /** Access and release on the ASR worker only. Semantic commits never reset this stream. */
 class LocalRecognizer(files: RecognizerFiles) : Closeable {
-    private val recognizer = OnlineRecognizer(config = OnlineRecognizerConfig(
-        featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80),
-        modelConfig = OnlineModelConfig(
-            transducer = OnlineTransducerModelConfig(
-                encoder = files.encoder.path,
-                decoder = files.decoder.path,
-                joiner = files.joiner.path),
-            tokens = files.tokens.path,
-            numThreads = 1, provider = "cpu"),
-        endpointConfig = EndpointConfig(rule2 = EndpointRule(true, 1.2f, 0f)),
-        enableEndpoint = true, decodingMethod = files.decodingMethod, maxActivePaths = 4))
-    // The pinned runtime detects Zipformer/NeMo and configures their own feature extraction.
-    private val stream = try {
-        recognizer.createStream().also { stream ->
-            try { files.language?.let { stream.setOption("language", it.code) } }
-            catch (e: Throwable) { stream.release(); throw e }
-        }
-    } catch (e: Throwable) { recognizer.release(); throw e }
+    private var recognizer: OnlineRecognizer? = null
+    private var stream: OnlineStream? = null
+    private var offline: OfflineSpeechRecognizer? = null
     private var ended = false
+
+    init {
+        try {
+            if (files.adapter != "online-transducer") offline = OfflineSpeechRecognizer(files)
+            else {
+                val online = OnlineRecognizer(config = OnlineRecognizerConfig(
+                    featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80),
+                    modelConfig = OnlineModelConfig(
+                        transducer = OnlineTransducerModelConfig(encoder = files.path("encoder"),
+                            decoder = files.path("decoder"), joiner = files.path("joiner")),
+                        tokens = files.path("tokens"), numThreads = 1, provider = "cpu"),
+                    endpointConfig = EndpointConfig(rule2 = EndpointRule(true, 1.2f, 0f)),
+                    enableEndpoint = true, decodingMethod = files.decodingMethod, maxActivePaths = 4))
+                recognizer = online
+                stream = online.createStream()
+                files.language?.let { checkNotNull(stream).setOption("language", it.code) }
+            }
+        } catch (e: Throwable) { close(); throw e }
+    }
 
     fun accept(samples: FloatArray, sampleRate: Int): List<Hypothesis> {
         check(!ended)
-        // sherpa's stateful LinearResample handles a device's 48 kHz fallback.
-        stream.acceptWaveform(samples, sampleRate)
+        require(sampleRate in listOf(16_000, 48_000) && samples.size <= sampleRate / 10)
+        offline?.let { return it.accept(samples, sampleRate) }
+        checkNotNull(stream).acceptWaveform(samples, sampleRate)
         return decode()
     }
 
     private fun decode(): List<Hypothesis> = buildList {
-        while (recognizer.isReady(stream)) {
-            recognizer.decode(stream)
-            val endpoint = recognizer.isEndpoint(stream)
-            add(Hypothesis(recognizer.getResult(stream).text.trim(), endpoint))
-            if (endpoint) recognizer.reset(stream)
+        val online = checkNotNull(recognizer)
+        val audio = checkNotNull(stream)
+        while (online.isReady(audio)) {
+            online.decode(audio)
+            val endpoint = online.isEndpoint(audio)
+            add(Hypothesis(online.getResult(audio).text.trim(), endpoint))
+            if (endpoint) online.reset(audio)
         }
     }
 
     fun finish(sampleRate: Int): List<Hypothesis> {
         check(!ended)
         ended = true
-        // Stop-only tail flush covers the pinned chunks. No silence during capture.
-        stream.acceptWaveform(FloatArray(sampleRate * 96 / 100), sampleRate)
-        stream.inputFinished()
-        return decode() + Hypothesis(recognizer.getResult(stream).text.trim(), true)
+        offline?.let { return it.finish() }
+        val audio = checkNotNull(stream)
+        // Stop-only tail flush covers the pinned streaming chunks.
+        audio.acceptWaveform(FloatArray(sampleRate * 96 / 100), sampleRate)
+        audio.inputFinished()
+        return decode() + Hypothesis(checkNotNull(recognizer).getResult(audio).text.trim(), true)
     }
 
-    override fun close() { stream.release(); recognizer.release() }
+    override fun close() {
+        stream?.release(); stream = null
+        recognizer?.release(); recognizer = null
+        offline?.close(); offline = null
+    }
 }

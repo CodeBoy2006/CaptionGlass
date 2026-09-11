@@ -25,4 +25,7 @@ android {
 
 kotlin { jvmToolchain(17) }
 
-dependencies { implementation(project(":engine")) }
+dependencies {
+    implementation(project(":engine"))
+    implementation("com.google.ai.edge.litert:litert:2.2.0")
+}

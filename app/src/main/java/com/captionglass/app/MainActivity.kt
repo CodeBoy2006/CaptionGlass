@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
         selection = value
         getSharedPreferences("selection", MODE_PRIVATE).edit {
             putString("source", value.languages.source.code).putString("target", value.languages.target.code)
-            putString("recognizer", value.recognizerId)
+            putString("recognizer", value.recognizerId).putString("translator", value.translatorId)
         }
     }
     private val projectionRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -78,7 +78,8 @@ class MainActivity : ComponentActivity() {
                     .putExtra(PlaybackCaptureService.EXTRA_PROJECTION, result.data)
                     .putExtra(PlaybackCaptureService.EXTRA_SOURCE, selection.languages.source.code)
                     .putExtra(PlaybackCaptureService.EXTRA_TARGET, selection.languages.target.code)
-                    .putExtra(PlaybackCaptureService.EXTRA_RECOGNIZER, selection.recognizerId))
+                    .putExtra(PlaybackCaptureService.EXTRA_RECOGNIZER, selection.recognizerId)
+                    .putExtra(PlaybackCaptureService.EXTRA_TRANSLATOR, selection.translatorId))
             } catch (_: Exception) { notice = Notice.START_REJECTED }
         } else notice = Notice.CONSENT_CANCELLED
     }
@@ -135,7 +136,8 @@ class MainActivity : ComponentActivity() {
         selection = runCatching {
             ModelSelection(LanguagePair(checkNotNull(Language.fromCode(preferences.getString("source", "en"))),
                 checkNotNull(Language.fromCode(preferences.getString("target", "zh")))),
-                checkNotNull(preferences.getString("recognizer", ModelSelection().recognizerId)))
+                checkNotNull(preferences.getString("recognizer", ModelSelection().recognizerId)),
+                checkNotNull(preferences.getString("translator", ModelSelection().translatorId)))
                 .also { check(catalog.valid(it)) }
         }.getOrDefault(ModelSelection())
         authorizing = savedInstanceState?.getBoolean("authorizing") ?: false

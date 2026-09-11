@@ -41,6 +41,7 @@ object ModelPack {
     }
     private fun hash(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
     fun ready(context: Context, model: ModelSpec): Boolean = runCatching {
+        check(model.installable)
         val dir = directory(context, model)
         File(dir, "verified").readText() == hash(model.manifest) && model.files.all {
             File(dir, it.name).isFile && File(dir, it.name).length() == it.size
@@ -72,6 +73,7 @@ object ModelPack {
 
     /** Hash every byte before native parsing. A failed recheck must invalidate the old marker. */
     fun verify(context: Context, model: ModelSpec, dir: File = directory(context, model), read: (Long) -> Unit = {}) {
+        check(model.installable) { "此模型暂不可安装" }
         val marker = File(dir, "verified")
         check(!marker.exists() || marker.delete()) { "无法更新模型校验状态" }
         model.files.forEach { entry ->
@@ -149,6 +151,7 @@ object ModelPack {
     /** Download and SAF import share the same size limits, verification, and atomic activation. */
     internal fun install(context: Context, model: ModelSpec, phase: PackPhase, open: (ModelFile) -> InputStream): Job? =
         perform(model.id, phase) {
+            check(model.installable) { "此模型暂不可安装" }
             val operation = currentCoroutineContext()
             val staging = File(context.filesDir, "models/${model.id}-staging")
             check(staging.deleteRecursively()) { "无法清理临时目录" }

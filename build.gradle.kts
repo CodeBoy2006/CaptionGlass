@@ -14,14 +14,14 @@ tasks.register("downloadModels") {
         val manifest = groovy.json.JsonSlurper().parse(file("models/catalog.json")) as Map<*, *>
         val requested = providers.gradleProperty("model").orNull
         val models = (manifest["models"] as List<*>).map { it as Map<*, *> }
-            .filter { requested == null || it["id"] == requested }
+            .filter { if (requested == null) it["id"] in listOf("x-asr-zh-en-480ms", "hy-mt2-1.8b-q4-k-m") else it["id"] == requested }
         check(models.isNotEmpty()) { "Unknown model: $requested" }
         models.forEach { model ->
             check(model["installable"] == true) { "Candidate model is not installable" }
             val destination = file("artifacts/models/${model["id"]}").also { it.mkdirs() }
             (model["files"] as List<*>).forEach { value ->
                 val entry = value as Map<*, *>
-                val name = (entry["path"] as String).substringAfterLast('/')
+                val name = entry["name"] as? String ?: (entry["path"] as String).substringAfterLast('/')
                 val target = destination.resolve(name)
                 fun valid(candidate: java.io.File): Boolean {
                     if (!candidate.isFile || candidate.length() != (entry["sizeBytes"] as Number).toLong()) return false

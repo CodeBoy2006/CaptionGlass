@@ -13,14 +13,6 @@ internal val PackPhase.label: Int
         PackPhase.IDLE -> R.string.pack_ready
     }
 
-internal val ModelSpec.description: Int
-    get() = when (id) {
-        "x-asr-zh-en-480ms" -> R.string.model_x_asr
-        "nemotron-3.5-560ms-int8" -> R.string.model_nemotron
-        "pengcheng-8lang-int8" -> R.string.model_pengcheng
-        else -> R.string.shared_translator
-    }
-
 /** Caption surfaces stay dark in both themes, like broadcast subtitles. Shared by the overlay and the in-app stage. */
 internal object CaptionPalette {
     const val STAGE = 0xFF121815.toInt()
@@ -55,6 +47,7 @@ internal val CaptureStatus.label: Int
         CaptureStatus.CAPTURE_INTERRUPTED -> R.string.status_capture_interrupted
         CaptureStatus.OVERRUN -> R.string.status_overrun
         CaptureStatus.RECOGNITION_FAILED -> R.string.status_recognition_failed
+        CaptureStatus.ASR_LIMIT -> R.string.status_asr_limit
         CaptureStatus.START_FAILED -> R.string.status_start_failed
     }
 
@@ -72,7 +65,7 @@ internal val CaptureStatus.icon: Int
         CaptureStatus.AUDIO_UNSUPPORTED -> R.drawable.ic_music_off
         CaptureStatus.CAPTURE_INTERRUPTED -> R.drawable.ic_link_off
         CaptureStatus.OVERRUN -> R.drawable.ic_speed
-        CaptureStatus.RECOGNITION_FAILED -> R.drawable.ic_sync_problem
+        CaptureStatus.RECOGNITION_FAILED, CaptureStatus.ASR_LIMIT -> R.drawable.ic_sync_problem
         CaptureStatus.START_FAILED -> R.drawable.ic_error
     }
 
@@ -85,6 +78,7 @@ internal val CaptureStatus.hint: Int?
         CaptureStatus.LOAD_FAILED -> R.string.hint_model_load
         CaptureStatus.OVERRUN -> R.string.hint_overrun
         CaptureStatus.START_FAILED -> R.string.hint_start_failed
+        CaptureStatus.ASR_LIMIT -> R.string.hint_asr_limit
         else -> null
     }
 

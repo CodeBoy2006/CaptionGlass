@@ -13,7 +13,7 @@ import java.util.concurrent.Executors
 enum class CaptureStatus {
     IDLE, PREPARING, WAITING, HEARING, SILENT,
     STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED,
-    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, START_FAILED,
+    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, ASR_LIMIT, START_FAILED,
 }
 
 /** A stop cause the UI can explain without parsing exception text. */
@@ -70,13 +70,13 @@ internal class CaptionSession(
     private fun now() = if (beganAt == 0L) 0L else SystemClock.elapsedRealtime() - beganAt
     private fun update(change: CaptureState.() -> CaptureState) { state = state.change(); publish(state) }
 
-    suspend fun start(asrFiles: RecognizerFiles, translationModel: File) {
+    suspend fun start(asrFiles: RecognizerFiles, translationModel: File, format: TranslationFormat) {
         publish(state)
         recognizer = withContext(asrWorker) { LocalRecognizer(asrFiles) }
         check(!stopped) { "字幕已停止" }
         val call = NativeCall(120_000)
         activeCall = call
-        try { translator = withContext(mtWorker) { LocalTranslator(translationModel, call) } }
+        try { translator = withContext(mtWorker) { LocalTranslator(translationModel, format, call) } }
         finally { call.close(); activeCall = null }
         check(!stopped) { "字幕已停止" }
         beganAt = SystemClock.elapsedRealtime()
@@ -93,7 +93,7 @@ internal class CaptionSession(
                 }
                 val tail = withContext(asrWorker) { checkNotNull(recognizer).finish(sampleRate) }
                 tail.forEach { hypothesis(it, endMs) }
-            } catch (e: Exception) { failure = e; stop(CaptureStatus.RECOGNITION_FAILED) }
+            } catch (e: Exception) { failure = e; stop(if (e is SpeechWindowLimit) CaptureStatus.ASR_LIMIT else CaptureStatus.RECOGNITION_FAILED) }
         }
         ticker = scope.launch {
             while (isActive) {
@@ -161,7 +161,7 @@ internal class CaptionSession(
                 val call = NativeCall((8_000 - (now() - request.segment.endMs)).coerceAtLeast(1))
                 activeCall = call
                 val translated = try {
-                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages.target, call) }
+                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages, call) }
                 } catch (_: Exception) { null }
                 finally { call.close(); activeCall = null }
                 queue.complete(request.segment.key, translated, maxOf(now(), request.segment.endMs))?.let(::outcome)

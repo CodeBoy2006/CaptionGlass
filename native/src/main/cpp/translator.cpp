@@ -115,7 +115,7 @@ static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::s
     return tokens;
 }
 extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jlong model,
-                                                       jbyteArray input, jbyteArray background, jlong token, jint limit) {
+                                                       jbyteArray prefix, jbyteArray input, jbyteArray ending, jbyteArray background, jboolean greedy, jlong token, jint limit) {
     auto * m = reinterpret_cast<Model *>(model);
     auto * call = reinterpret_cast<Call *>(token);
     if (!m->usable) {
@@ -128,8 +128,8 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
         // Success and failure both wipe the cache before returning to the sole caller.
         llama_set_abort_callback(m->ctx, aborted, call);
         const auto * vocab = llama_model_get_vocab(m->model);
-        // Exact pinned Hy-MT2 template. User content cannot inject special role tokens.
-        auto tokens = tokenize(vocab, "<｜hy_begin▁of▁sentence｜><｜hy_User｜>", true);
+        // Only APK-owned template pieces parse role tokens. Speech/history remain literal.
+        auto tokens = tokenize(vocab, bytes(env, prefix), true);
         auto history = tokenize(vocab, bytes(env, background), false);
         if (!history.empty()) {
             auto header = tokenize(vocab, "[Background Information]\n", false);
@@ -139,17 +139,20 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
             tokens.insert(tokens.end(), separator.begin(), separator.end());
         }
         auto content = tokenize(vocab, bytes(env, input), false);
-        auto suffix = tokenize(vocab, "<｜hy_Assistant｜>", true);
+        auto suffix = tokenize(vocab, bytes(env, ending), true);
         tokens.insert(tokens.end(), content.begin(), content.end());
         tokens.insert(tokens.end(), suffix.begin(), suffix.end());
         if (limit < 1 || limit > 256 || tokens.size() + limit > 2048) throw std::runtime_error("context_budget");
         auto sampler = std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>(
             llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(20));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.05f, 0.f, 0.f));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.6f, 1));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
+        if (greedy) llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
+        else {
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(20));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.05f, 0.f, 0.f));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.6f, 1));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.7f));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
+        }
         auto batch = llama_batch_init(batch_size, 0, 1);
         struct BatchGuard { llama_batch b; ~BatchGuard() { llama_batch_free(b); } } guard{batch};
         int pos = 0;
