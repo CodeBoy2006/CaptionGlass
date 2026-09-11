@@ -9,7 +9,7 @@ bash scripts/prepare-native.sh
 ./gradlew :engine:check :app:assembleDebug :app:lintDebug
 ```
 
-使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽、1,000 个确认片段完整性、阅读停留/分页/重排与字体重测。
+使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽、1,000 个确认片段完整性、阅读停留/分页/重排与字体重测；本次增加语言代码／交换约束、日语句尾否定等待、日语标点残段和假名／韩文阅读停留。
 
 CI 获取哈希固定的 native 依赖后运行上述检查。CI 不下载模型，不声称执行了真机推理。M0 的固定文本预览已删除。
 
@@ -22,9 +22,9 @@ bash scripts/prepare-fixtures.sh
 bash scripts/device-check.sh <明确选择且解锁的测试设备序列号>
 ```
 
-系统合成语音使用 macOS Daniel / Tingting，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
+系统合成语音使用 macOS Daniel / Tingting / Kyoko，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
 
-检查内容：五文件 SHA-256 与同尺寸损坏拒绝；中英双向真实 MT；派发前取消、运行截止时间、输出预算耗尽、取消后复用；英语与中文 1× 实时回放；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。
+检查内容：模型目录与语言兼容规则、独立文件路径、三项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前取消、运行截止时间、输出预算耗尽、取消后复用；英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。
 
 vivo 的后台冻结可能在 Instrumentation 首个 Activity 启动前暂停进程。脚本在派发后显式打开目标 Activity；验收期间页面使用 `FLAG_KEEP_SCREEN_ON`，结束后解除。冻结等待不能混入模型性能。USB 安装仍遵守厂商逐次确认。
 
@@ -145,6 +145,32 @@ adb -s <serial> shell am start -n com.captionglass.app.test/com.captionglass.app
 
 未验证：SAF 导入过程中的进度环与失败提示（导入流程只增加进度上报与错误文案筛选）、真机与 OEM 通知样式、TalkBack 全流程。
 
+### 2.7 模型选择与多语种实验扩展
+
+2026-09-11，独立临时 `CaptionGlassMultilingual` AVD，API 37、arm64、16 KB 页、8 GB RAM、12 GB 数据分区；未使用个人 AVD 的数据。连接的 vivo V2415A 拒绝本次 USB 安装（`INSTALL_FAILED_ABORTED: User rejected permissions`），所以本节不是手机实测。固定模型见 `models/catalog.json`；应用继续无网络权限。
+
+| 检查 | 观测 |
+| --- | --- |
+| 模型准备 | 三项共 2,086,550,513 字节；不可变 revision、尺寸、SHA-256 全部通过；ASR 分目录，MT 一份 |
+| 核心与构建 | `:engine:check :app:assembleDebug :app:lintDebug` 与测试 APK 通过；独立代码审查发现的标签参数遗漏已修复 |
+| 目录与选择规则 | 输入／目标分离、日语自动匹配、拒绝不兼容模型和未知输入、交换约束、共用 MT、独立 tokens 路径通过 |
+| 模型安装边界 | 同尺寸损坏拒绝、还原复核、进程中断后的 backup 恢复通过；真实 SAF 文件夹授权→339 MB 多语模型替换→已就绪通过，staging/backup 清理，X-ASR 与 MT 保持就绪 |
+| 原生翻译 | 日中、日英、中日、英日、英法、英韩、英阿；中英原有方向继续通过；这几条固定短句不代表完整质量评估 |
+| 取消与预算 | 派发前取消、200 ms deadline、1 token 输出预算、取消后复用、带背景短句通过 |
+| 1× 真推理 | 中英、日中、日英、英日各 2 个确认片段／2 个终态；日语 8.5 秒停止后完整收敛，另有中英停止再开检查 |
+| 音频与显示 | 48 kHz 重采样和 stop-only 尾部保留通过；分页文本拼接完整；没有用离线批量吞吐冒充实时回放 |
+| 选择器界面 | 真实 AVD 截图检查：输入／目标搜索、日语自动匹配、禁用不支持方向的交换、进程重启后保留日→法、深色与 130% 字号、横屏设置布局；独立原生 UI 审查通过（不含 TalkBack、平板或 200% 字号） |
+
+原生 MT 示例：“今日はいい天気です。”→“今天天气很好。”／“It’s nice weather today.”（具体用词见日志）；“Thank you very much.” 的法、韩、阿输出分别包含“Merci beaucoup.”、“정말 감사합니다.”、“شكرًا جزيلًا.”。这些是权重的实际输出，不是预设字幕。
+
+日语诊断使用同一段 Kyoko 合成语音，以 1× 速度直接进入 LocalRecognizer，绕过 SourceGate、MT 和 UI。greedy 输出“日本はいい天気です”和“音声を翻訳します”；中间区域为原始 ASR 空假设，确认遗漏并非队列或分页丢段。同条件下 sherpa 现有 modified beam search（4 paths）输出“きょうはいい天気です”和“しましょうこのアプリは日本語の音声を翻訳します”。因此多语模型固定使用 beam，中英 X-ASR 保持 greedy；不添加新依赖或用户调参。
+
+最终日语首个稳定原文约 1.2 秒，第一条译文约 4.3–4.5 秒（含语义等待）；后半段在 9.499 秒语音输入结束后完成。这是模拟器短样本观测，不是手机延迟目标达标、P50/P95 或热稳态结果。
+
+**已知限制：** beam 仍漏掉“公園を散歩”等词，翻译可能据不完整原文补成泛指表达；中英旧样本仍有“字幕→字母”错误。上游定制服务使用语言 tag 初始化；本次固定通用 Zipformer JNI 接口未开放该接口，语言选择不会强制 ASR 输出指定语言。八语种模型中的俄、越、泰、印尼、阿语音输入，以及其余 Hy-MT2 目标代码，尚未逐一做本应用的真实样本验收。所有新增语种保留实验提示；自然语音、否定／数字／专名、多说话人、手机持续负载与 30–60 分钟验收仍未完成。
+
+证据保存在 ignored `artifacts/multilingual-build.log`、`multilingual-final-all.log`、`multilingual-asr-diagnostic.log` 与 `multilingual-asr-beam.log`。`mode asr-ja` 可重跑当前目录所固定的日语解码配置；`mode verify` 只重新校验模型文件，不执行质量测试。
+
 ## 3. M2：可持续体验
 
 实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，回看，TXT/SRT/VTT 导出，相关术语，完整下载/恢复/取消管理。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
@@ -166,4 +192,4 @@ adb -s <serial> shell am start -n com.captionglass.app.test/com.captionglass.app
 
 ## 4. M3：经验证的扩展
 
-长时基线通过后再评估 STQ、GPU/QNN 白名单、轻量配置和日语。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。
+日语与多语种已提供实验性接入，仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU/QNN 白名单和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。

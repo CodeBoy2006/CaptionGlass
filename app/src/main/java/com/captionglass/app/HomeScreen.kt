@@ -1,20 +1,13 @@
 package com.captionglass.app
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -26,7 +19,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -40,22 +32,22 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun HomeScreen(
-    capture: CaptureState, pack: PackState, ready: Boolean, overlayAllowed: Boolean,
-    chineseSource: Boolean, authorizing: Boolean,
-    onSwap: () -> Unit, onStart: () -> Unit, onStop: () -> Unit, onImport: () -> Unit,
+    capture: CaptureState, pack: PackState, missing: ModelSpec?, overlayAllowed: Boolean,
+    selection: ModelSelection, authorizing: Boolean, catalog: ModelCatalog, installed: Set<String>,
+    onSelect: (ModelSelection) -> Unit, onStart: () -> Unit, onStop: () -> Unit, onImport: () -> Unit,
     onOpenRecords: () -> Unit, onOverlaySettings: () -> Unit,
 ) {
     val busy = capture.active || authorizing || pack.importing
-    val direction = @Composable { DirectionSwitch(chineseSource, enabled = !busy, onSwap) }
+    val direction = @Composable { SelectionControls(selection, catalog, installed, enabled = !busy, onSelect) }
     val signals = @Composable { Signals(capture, pack, overlayAllowed, onOpenRecords, onOverlaySettings) }
-    val control = @Composable { PrimaryControl(capture, pack, ready, authorizing, onStart, onStop, onImport) }
+    val control = @Composable { PrimaryControl(capture, pack, missing, authorizing, onStart, onStop, onImport) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val viewport = maxHeight
         if (maxWidth > maxHeight && maxWidth >= 600.dp) {
             // Wide: the stage reads on the left; everything you operate sits together on the right.
             Row(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-                    Header(); CaptionStage(capture, chineseSource); signals()
+                    Header(); CaptionStage(capture, selection.languages); signals()
                 }
                 Column(Modifier.width(320.dp).verticalScroll(rememberScrollState()).heightIn(min = viewport).padding(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
@@ -66,7 +58,7 @@ internal fun HomeScreen(
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Header(); CaptionStage(capture, chineseSource)
+                    Header(); CaptionStage(capture, selection.languages)
                     Spacer(Modifier.height(12.dp)); direction(); signals()
                 }
                 Column(Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 16.dp),
@@ -153,41 +145,11 @@ private fun SignalChip(icon: Int, text: String, tint: Color, onClick: () -> Unit
     }
 }
 
-@Composable
-private fun DirectionSwitch(chineseSource: Boolean, enabled: Boolean, onSwap: () -> Unit) {
-    val turn by animateFloatAsState(if (chineseSource) 180f else 0f, label = "swap")
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        LanguagePill(if (chineseSource) R.string.language_zh else R.string.language_en, R.drawable.ic_volume_up,
-            enabled, onSwap, Modifier.weight(1f))
-        FilledTonalIconButton(onSwap, Modifier.padding(horizontal = 8.dp).size(48.dp), enabled = enabled) {
-            Icon(painterResource(R.drawable.ic_swap), stringResource(R.string.swap_direction), Modifier.graphicsLayer { rotationZ = turn })
-        }
-        LanguagePill(if (chineseSource) R.string.language_en else R.string.language_zh, R.drawable.ic_subtitles,
-            enabled, onSwap, Modifier.weight(1f))
-    }
-}
-
-/** Left pill is what you hear, right pill is what you read. */
-@Composable
-private fun LanguagePill(label: Int, icon: Int, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
-    Surface(onClick, modifier.height(56.dp), enabled = enabled, shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Row(Modifier.alpha(if (enabled) 1f else 0.45f).padding(horizontal = 14.dp),
-            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            Icon(painterResource(icon), null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(8.dp))
-            AnimatedContent(label, transitionSpec = {
-                (slideInVertically { it / 2 } + fadeIn()) togetherWith (slideOutVertically { -it / 2 } + fadeOut())
-            }, label = "language") { Text(stringResource(it), style = MaterialTheme.typography.titleMedium) }
-        }
-    }
-}
-
 private enum class Control { IMPORT, IMPORTING, START, AUTHORIZING, PREPARING, RUNNING, STOPPING }
 
 /** One round button always performs the next sensible step: import, start or stop. */
 @Composable
-private fun PrimaryControl(capture: CaptureState, pack: PackState, ready: Boolean, authorizing: Boolean,
+private fun PrimaryControl(capture: CaptureState, pack: PackState, missing: ModelSpec?, authorizing: Boolean,
                            onStart: () -> Unit, onStop: () -> Unit, onImport: () -> Unit) {
     val control = when {
         capture.stopping -> Control.STOPPING
@@ -195,7 +157,7 @@ private fun PrimaryControl(capture: CaptureState, pack: PackState, ready: Boolea
         capture.active -> Control.RUNNING
         pack.importing -> Control.IMPORTING
         authorizing -> Control.AUTHORIZING
-        !ready -> Control.IMPORT
+        missing != null -> Control.IMPORT
         else -> Control.START
     }
     val colors = MaterialTheme.colorScheme
@@ -204,7 +166,7 @@ private fun PrimaryControl(capture: CaptureState, pack: PackState, ready: Boolea
     val container by animateColorAsState(if (stops) colors.inverseSurface else colors.primary, label = "container")
     val content = (if (stops) colors.inverseOnSurface else colors.onPrimary).copy(alpha = if (enabled) 1f else 0.6f)
     val action = stringResource(when (control) {
-        Control.IMPORT, Control.IMPORTING -> R.string.action_import
+        Control.IMPORT, Control.IMPORTING -> if (missing?.kind == "asr") R.string.action_import_asr else R.string.action_import_mt
         Control.START, Control.AUTHORIZING -> R.string.action_start
         else -> R.string.action_stop_captions
     })
@@ -241,7 +203,7 @@ private fun PrimaryControl(capture: CaptureState, pack: PackState, ready: Boolea
         }
         Spacer(Modifier.height(6.dp))
         Text(label, style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"))
-        Text(if (control == Control.IMPORT) stringResource(R.string.pack_size) else "",
+        Text(if (control == Control.IMPORT && missing != null) "${missing.name} · ${modelSize(missing.size)}" else "",
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
     }
 }

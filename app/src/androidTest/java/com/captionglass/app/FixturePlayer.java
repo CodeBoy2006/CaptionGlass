@@ -23,7 +23,8 @@ public class FixturePlayer extends Activity {
                 player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_ALL).build());
-                String name = "zh".equals(getIntent().getStringExtra("language")) ? "zh.wav" : "en.wav";
+                String language = getIntent().getStringExtra("language");
+                String name = "ja".equals(language) ? "ja.wav" : "zh".equals(language) ? "zh.wav" : "en.wav";
                 try (AssetFileDescriptor file = getAssets().openFd(name)) {
                     player.setDataSource(file.getFileDescriptor(), file.getStartOffset(), file.getLength());
                 }

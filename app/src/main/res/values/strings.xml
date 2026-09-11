@@ -5,23 +5,18 @@
     <string name="tab_records">记录</string>
     <string name="tab_settings">设置</string>
 
-    <string name="language_en" translatable="false">English</string>
-    <string name="language_zh" translatable="false">中文</string>
-    <string name="direction_en_zh" translatable="false">English → 中文</string>
-    <string name="direction_zh_en" translatable="false">中文 → English</string>
     <string name="swap_direction">切换翻译方向</string>
     <string name="offline">离线</string>
 
     <string name="action_start">开启字幕</string>
     <string name="action_stop">停止</string>
     <string name="action_stop_captions">停止字幕</string>
-    <string name="action_import">导入语言包</string>
+    <string name="action_import">导入模型</string>
     <string name="action_replace">替换</string>
     <string name="action_dismiss">关闭提示</string>
     <string name="state_authorizing">等待授权</string>
     <string name="state_importing">导入中 %1$d%%</string>
     <string name="state_stopping">正在停止</string>
-    <string name="pack_size">5 个文件 · 1.8 GB</string>
 
     <string name="status_idle">未开启</string>
     <string name="status_preparing">准备中</string>
@@ -31,8 +26,8 @@
     <string name="status_stopped">已停止</string>
     <string name="status_consent_ended">捕获授权已结束</string>
     <string name="status_permission_lost">捕获权限已失效</string>
-    <string name="status_pack_invalid">语言包校验失败</string>
-    <string name="status_load_failed">语言包加载失败</string>
+    <string name="status_pack_invalid">模型校验失败</string>
+    <string name="status_load_failed">模型加载失败</string>
     <string name="status_audio_unsupported">此设备无法捕获播放声音</string>
     <string name="status_capture_interrupted">音频捕获中断</string>
     <string name="status_overrun">识别跟不上播放</string>
@@ -40,10 +35,10 @@
     <string name="status_start_failed">无法启动字幕</string>
     <string name="hint_silent">确认正在播放 · 部分应用禁止捕获</string>
     <string name="hint_restart">重新开启即可继续</string>
-    <string name="hint_reimport">请重新导入语言包</string>
+    <string name="hint_reimport">请重新导入模型</string>
     <string name="hint_memory">关闭高内存应用后重试</string>
     <string name="hint_overrun">音频缓冲已满，请重新开启</string>
-    <string name="hint_start_failed">检查语言包与权限后重试</string>
+    <string name="hint_start_failed">检查模型与权限后重试</string>
 
     <string name="notice_consent_cancelled">已取消捕获授权</string>
     <string name="notice_audio_denied">需要录音权限来捕获播放声音，不使用麦克风</string>
@@ -66,8 +61,7 @@
     <string name="records_pending">%1$d 处理中</string>
     <string name="records_limit">仅保留最近 200 条</string>
 
-    <string name="settings_pack">语言包</string>
-    <string name="pack_title" translatable="false">中文 ⇄ English</string>
+    <string name="settings_pack">离线模型</string>
     <string name="pack_ready">已就绪</string>
     <string name="pack_missing">未导入</string>
     <string name="pack_import_failed">导入失败，请检查空间与文件权限</string>
@@ -90,4 +84,22 @@
 
     <string name="notification_channel">实时字幕</string>
     <string name="notification_title">字幕运行中</string>
+    <string name="source_language">听到的语言</string>
+    <string name="target_language">字幕语言</string>
+    <string name="source_hint">按识别模型支持的语言选择，必要时自动匹配模型。</string>
+    <string name="target_hint">由 Hy-MT2 在本机翻译；仅支持输出的语言不能交换为输入。</string>
+    <string name="choose_model">选择识别模型</string>
+    <string name="model_hint">只可选择支持当前输入语言的模型。停止字幕后可以切换。</string>
+    <string name="search_language">搜索语言或语言代码</string>
+    <string name="no_language_match">没有匹配语言</string>
+    <string name="model_incompatible">不支持当前输入语言</string>
+    <string name="model_selected">已选择</string>
+    <string name="model_use">使用此模型</string>
+    <string name="models_ready">识别与翻译模型已就绪</string>
+    <string name="models_needed">需导入识别或翻译模型</string>
+    <string name="action_import_asr">导入识别模型</string>
+    <string name="action_import_mt">导入翻译模型</string>
+    <string name="translation_languages">%1$d 种字幕语言 · 包含日语</string>
+    <string name="shared_translator">翻译共用一份 Hy-MT2，切换识别模型无需重复导入。</string>
+    <string name="experimental_languages">多语种为实验支持，准确率与连续使用表现仍需验证。</string>
 </resources>

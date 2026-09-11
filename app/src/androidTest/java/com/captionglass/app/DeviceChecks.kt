@@ -7,6 +7,8 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.view.WindowManager
 import com.captionglass.nativebridge.*
+import com.captionglass.engine.Language
+import com.captionglass.engine.LanguagePair
 import kotlinx.coroutines.*
 import java.io.File
 import java.nio.ByteBuffer
@@ -15,43 +17,58 @@ import java.nio.ByteOrder
 /** Explicit, model-dependent acceptance; never runs as part of ordinary CI. */
 class DeviceChecks : Instrumentation() {
     private var mode = "all"
+    private val catalog by lazy { ModelCatalog(targetContext) }
+    private val baseline get() = catalog.recognizer(ModelSelection())
+    private val multilingual get() = catalog.recognizers.single { Language.JA in it.languages }
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; start() }
     private fun report(text: String) { sendStatus(0, Bundle().apply { putString("stream", "$text\n") }) }
     override fun onStart() {
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
+            check(mode in setOf("all", "catalog", "verify", "native", "multilingual", "replay", "fallback", "latency", "asr-ja"))
             report("Verifying pinned model files")
-            ModelPack.verify(targetContext)
+            catalogChecks()
+            if (mode == "catalog") {
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: catalog\n") }); return
+            }
+            catalog.models.forEach { ModelPack.verify(targetContext, it) }
             if (mode == "all") {
-                val tokens = File(ModelPack.directory(targetContext), "tokens.txt")
+                val tokens = File(ModelPack.directory(targetContext, baseline), "tokens.txt")
                 val original = tokens.readBytes()
                 try {
                     val changed = original.copyOf()
                     changed[0] = (changed[0].toInt() xor 1).toByte()
                     tokens.writeBytes(changed)
-                    check(runCatching { ModelPack.verify(targetContext) }.isFailure) { "Accepted a same-size corrupt model file" }
+                    check(runCatching { ModelPack.verify(targetContext, baseline) }.isFailure) { "Accepted a same-size corrupt model file" }
                 } finally { tokens.writeBytes(original) }
-                ModelPack.verify(targetContext)
+                ModelPack.verify(targetContext, baseline)
                 report("PASS: same-size model corruption rejected; original restored and verified")
-                val pack = ModelPack.directory(targetContext)
-                val backup = File(targetContext.filesDir, "language-pack-backup")
+                val pack = ModelPack.directory(targetContext, baseline)
+                val backup = File(targetContext.filesDir, "models/${baseline.id}-backup")
                 check(!backup.exists() && pack.renameTo(backup))
-                check(ModelPack.directory(targetContext).isDirectory && !backup.exists())
-                check(ModelPack.ready(targetContext))
+                check(ModelPack.directory(targetContext, baseline).isDirectory && !backup.exists())
+                check(ModelPack.ready(targetContext, baseline))
                 report("PASS: interrupted pack activation restores previous pack")
             }
             runBlocking {
-                if (mode in listOf("all", "native")) nativeChecks()
+                if (mode == "asr-ja") japaneseAsrCheck()
+                if (mode in listOf("all", "native", "multilingual")) nativeChecks()
                 if (mode in listOf("all", "replay")) {
-                    replay("en", false)
-                    replay("en", false, stopAtMs = 4500)
-                    replay("zh", true)
+                    replay("en", Language.ZH)
+                    replay("en", Language.ZH, stopAtMs = 4500)
+                    replay("zh", Language.EN)
+                }
+                if (mode in listOf("all", "multilingual")) {
+                    replay("ja", Language.ZH)
+                    replay("ja", Language.EN)
+                    replay("ja", Language.ZH, stopAtMs = 8500)
+                    replay("en", Language.JA, recognizerId = multilingual.id)
                 }
                 if (mode in listOf("all", "fallback")) fallbackCheck()
                 if (mode == "latency") {
-                    replay("en", false, repetitions = 4)
-                    replay("zh", true, repetitions = 4)
+                    replay("en", Language.ZH, repetitions = 4)
+                    replay("zh", Language.EN, repetitions = 4)
                 }
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") })
@@ -61,47 +78,85 @@ class DeviceChecks : Instrumentation() {
             runOnMainSync { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
     }
+    /** Diagnostic uses the same real-time PCM without SourceGate, MT, or UI state. */
+    private suspend fun japaneseAsrCheck() = withContext(Dispatchers.Default) {
+        val samples = readWave(File(targetContext.filesDir, "fixtures/ja.wav"))
+        LocalRecognizer(multilingual.recognizerFiles(targetContext)).use { asr ->
+            val began = SystemClock.elapsedRealtime()
+            var previous = ""
+            for (position in samples.indices step 1600) {
+                val end = minOf(position + 1600, samples.size)
+                delay((began + end * 1000L / 16000 - SystemClock.elapsedRealtime()).coerceAtLeast(0))
+                asr.accept(samples.copyOfRange(position, end), 16000).forEach {
+                    if (it.text != previous || it.final) report("ASR ja at_ms=${end * 1000L / 16000} final=${it.final}: ${it.text}")
+                    previous = it.text
+                }
+            }
+            asr.finish(16000).forEach { report("ASR ja tail final=${it.final}: ${it.text}") }
+        }
+    }
+    private fun catalogChecks() {
+        val initial = ModelSelection()
+        check(catalog.valid(initial))
+        val japanese = catalog.withLanguages(initial, LanguagePair(Language.JA, Language.ZH))
+        check(japanese.recognizerId == multilingual.id && catalog.valid(japanese))
+        check(!catalog.valid(japanese.copy(recognizerId = baseline.id)))
+        check(Language.FR !in catalog.sources && Language.FR in catalog.translator.languages)
+        check(catalog.withLanguages(japanese, japanese.languages.swapped()).languages.target == Language.JA)
+        check(catalog.required(initial).last() == catalog.required(japanese).last())
+        check(baseline.file(targetContext, "tokens") != multilingual.file(targetContext, "tokens"))
+        check(runCatching { catalog.withLanguages(initial, LanguagePair(Language.FR, Language.ZH)) }.isFailure)
+        report("PASS: catalog pins, source/target capabilities, compatible selection, shared translation model")
+    }
     private suspend fun nativeChecks() = withContext(Dispatchers.Default) {
         val began = SystemClock.elapsedRealtime()
         val load = NativeCall(120_000)
-        val model = try { LocalTranslator(ModelPack.directory(targetContext), load) } finally { load.close() }
+        val model = try { LocalTranslator(catalog.translator.file(targetContext, "model"), load) } finally { load.close() }
         report("MT load_ms=${SystemClock.elapsedRealtime() - began}")
         try {
-            fun translate(source: String, chinese: Boolean): String {
+            fun translate(source: String, target: Language): String {
                 val call = NativeCall(30_000)
                 val start = SystemClock.elapsedRealtime()
-                return try { model.translate(source, emptyList(), chinese, call).also {
-                    report("MT ${if (chinese) "zh-en" else "en-zh"} ms=${SystemClock.elapsedRealtime() - start}: $source => $it")
+                return try { model.translate(source, emptyList(), target, call).also {
+                    report("MT to-${target.code} ms=${SystemClock.elapsedRealtime() - start}: $source => $it")
                 } } finally { call.close() }
             }
-            check(translate("Good subtitles give you time to read.", false).any { it in '\u4e00'..'\u9fff' })
-            check(translate("今天天气很好，我们去公园散步。", true).contains("park", ignoreCase = true))
+            check(translate("Good subtitles give you time to read.", Language.ZH).any { it in '\u4e00'..'\u9fff' })
+            check(translate("今天天气很好，我们去公园散步。", Language.EN).contains("park", ignoreCase = true))
+            check(translate("今日はいい天気です。", Language.ZH).contains("天气"))
+            check(translate("今日はいい天気です。", Language.EN).contains("weather", ignoreCase = true))
+            check(translate("Thank you very much.", Language.JA).any { it in '\u3040'..'\u30ff' })
+            check(translate("非常感谢。", Language.JA).any { it in '\u3040'..'\u30ff' })
+            check(translate("Thank you very much.", Language.FR).contains("merci", ignoreCase = true))
+            check(translate("Thank you very much.", Language.KO).any { it in '\uac00'..'\ud7af' })
+            check(translate("Thank you very much.", Language.AR).any { it in '\u0600'..'\u06ff' })
             NativeCall(10_000).use { call ->
                 call.cancel()
                 val start = SystemClock.elapsedRealtime()
-                check(runCatching { model.translate("Hello", emptyList(), false, call) }.isFailure)
+                check(runCatching { model.translate("Hello", emptyList(), Language.ZH, call) }.isFailure)
                 check(SystemClock.elapsedRealtime() - start < 1000)
             }
             NativeCall(200).use { call ->
                 val start = SystemClock.elapsedRealtime()
-                check(runCatching { model.translate("Please explain the full history of technology in great detail.", emptyList(), false, call) }.isFailure)
+                check(runCatching { model.translate("Please explain the full history of technology in great detail.", emptyList(), Language.ZH, call) }.isFailure)
                 report("MT deadline_return_ms=${SystemClock.elapsedRealtime() - start}")
                 check(SystemClock.elapsedRealtime() - start < 5000)
             }
             NativeCall(30_000).use { call ->
-                check(runCatching { model.translate("We are testing subtitles on this phone.", emptyList(), false, call, maxTokens = 1) }.isFailure)
+                check(runCatching { model.translate("We are testing subtitles on this phone.", emptyList(), Language.ZH, call, maxTokens = 1) }.isFailure)
             }
-            check(translate("Thank you.", false).isNotBlank())
+            check(translate("Thank you.", Language.ZH).isNotBlank())
             NativeCall(30_000).use { call ->
                 val translated = model.translate("Thank you.", listOf("We are testing local speech recognition and translation.",
-                    "Good subtitles give you time to read."), false, call)
+                    "Good subtitles give you time to read."), Language.ZH, call)
                 check(translated.contains("谢") && !translated.contains("字幕") && !translated.contains("背景")) { "Translated context instead of source: $translated" }
                 report("PASS: short source with background: $translated")
             }
             report("PASS: pre-dispatch cancellation, deadline, output budget, reuse after abort")
         } finally { model.close() }
     }
-    private suspend fun replay(name: String, chinese: Boolean, stopAtMs: Long? = null, repetitions: Int = 1) = withContext(Dispatchers.Main) {
+    private suspend fun replay(name: String, target: Language, stopAtMs: Long? = null, repetitions: Int = 1,
+                               recognizerId: String = if (name == "ja") multilingual.id else baseline.id) = withContext(Dispatchers.Main) {
         val samples = withContext(Dispatchers.IO) {
             val input = readWave(File(targetContext.filesDir, "fixtures/$name.wav"))
             // Explicit test silence lets all reading pages finish after the repeated speech.
@@ -120,7 +175,8 @@ class DeviceChecks : Instrumentation() {
         var firstTranslation = 0L
         var began = 0L
         var stopping = false
-        val session = CaptionSession(scope, chinese, overlay::pages) { state ->
+        val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId)
+        val session = CaptionSession(scope, selection, overlay::pages) { state ->
             if (stopping) check(state.page == null) { "Stop restored a subtitle" }
             val elapsed = SystemClock.elapsedRealtime() - began
             if (mode == "latency" && state.confirmed > latest.confirmed)
@@ -148,7 +204,7 @@ class DeviceChecks : Instrumentation() {
         }
         try {
             if (mode == "latency") overlay.show()
-            session.start(ModelPack.directory(targetContext))
+            session.start(catalog.recognizer(selection).recognizerFiles(targetContext), catalog.translator.file(targetContext, "model"))
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
             began = SystemClock.elapsedRealtime()
@@ -171,7 +227,7 @@ class DeviceChecks : Instrumentation() {
             if (stopAtMs == null) check(latest.history.any { it.translation != null }) { "No successful translation: ${latest.history}" }
             else check(latest.history.any { it.untranslatedReason == com.captionglass.engine.UntranslatedReason.STOPPED })
             val source = latest.history.joinToString(" ") { it.segment.source }
-            check(if (chinese) source.contains("公园") else source.contains("subtitles", ignoreCase = true)) { "Unexpected ASR: $source" }
+            check(when (name) { "zh" -> source.contains("公园"); "ja" -> source.contains("天気"); else -> source.contains("subtitles", ignoreCase = true) }) { "Unexpected ASR: $source" }
             report("REPLAY $name stop_at_ms=$stopAtMs audio_ms=${position * 1000L / 16000} elapsed_ms=${SystemClock.elapsedRealtime() - began} first_source_ms=$firstSource first_translation_ms=$firstTranslation confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
             if (mode == "latency") {
                 check(latest.history.all { it.translation != null }) { "Untranslated benchmark segment: ${latest.history}" }
@@ -193,7 +249,7 @@ class DeviceChecks : Instrumentation() {
         val original = readWave(File(targetContext.filesDir, "fixtures/en.wav"))
         // Remove the fixture's padded silence: finish() must preserve the last spoken word.
         val samples = original.copyOf(original.size - 25_600)
-        LocalRecognizer(ModelPack.directory(targetContext)).use { asr ->
+        LocalRecognizer(baseline.recognizerFiles(targetContext)).use { asr ->
             val finals = mutableListOf<String>()
             var position = 0
             while (position < samples.size) {

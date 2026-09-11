@@ -8,10 +8,10 @@ class CaptionScheduler(
     private val minDwellMs: Long = 1_600,
     private val maxDwellMs: Long = 6_000,
     private val millisecondsPerLatinCodePoint: Long = 50,
-    private val millisecondsPerHanCodePoint: Long = 100,
+    private val millisecondsPerCjkCodePoint: Long = 100,
 ) {
     init { require(capacity > 0 && minDwellMs > 0 && maxDwellMs >= minDwellMs &&
-        millisecondsPerLatinCodePoint > 0 && millisecondsPerHanCodePoint > 0) }
+        millisecondsPerLatinCodePoint > 0 && millisecondsPerCjkCodePoint > 0) }
     private val pending = ArrayDeque<List<CaptionPage>>()
     private val pages = ArrayDeque<CaptionPage>()
     private var current: CaptionPage? = null
@@ -66,7 +66,10 @@ class CaptionScheduler(
     }
 
     private fun readingTime(text: String): Long = text.codePoints().mapToLong {
-        if (Character.UnicodeScript.of(it) == Character.UnicodeScript.HAN) millisecondsPerHanCodePoint
-        else millisecondsPerLatinCodePoint
+        when (Character.UnicodeScript.of(it)) {
+            Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA,
+            Character.UnicodeScript.KATAKANA, Character.UnicodeScript.HANGUL -> millisecondsPerCjkCodePoint
+            else -> millisecondsPerLatinCodePoint
+        }
     }.sum()
 }

@@ -22,7 +22,7 @@ internal class CaptureFailure(val status: CaptureStatus) : Exception(status.name
 data class CaptureState(
     val active: Boolean = false,
     val stopping: Boolean = false,
-    val chineseSource: Boolean = false,
+    val selection: ModelSelection = ModelSelection(),
     val status: CaptureStatus = CaptureStatus.IDLE,
     val stable: String = "",
     val provisional: String = "",
@@ -40,7 +40,7 @@ internal data class PcmFrame(val samples: FloatArray, val sampleRate: Int, val e
 /** All mutable pipeline state belongs to Main. Only the two dedicated workers enter JNI. */
 internal class CaptionSession(
     private val scope: CoroutineScope,
-    private val chineseSource: Boolean,
+    private val selection: ModelSelection,
     private val paginate: (String, Boolean) -> List<String>,
     private val publish: (CaptureState) -> Unit,
 ) {
@@ -51,8 +51,8 @@ internal class CaptionSession(
     private val id = UUID.randomUUID().toString()
     private val queue = TranslationQueue(id, contextCharacters = 512)
     private val scheduler = CaptionScheduler()
-    private var state = CaptureState(active = true, chineseSource = chineseSource, status = CaptureStatus.PREPARING)
-    private var gate = SourceGate()
+    private var state = CaptureState(active = true, selection = selection, status = CaptureStatus.PREPARING)
+    private var gate = SourceGate(language = selection.languages.source)
     private val utteranceKeys = mutableSetOf<SegmentKey>()
     private var revision = 0
     private var sequence = 0L
@@ -70,13 +70,13 @@ internal class CaptionSession(
     private fun now() = if (beganAt == 0L) 0L else SystemClock.elapsedRealtime() - beganAt
     private fun update(change: CaptureState.() -> CaptureState) { state = state.change(); publish(state) }
 
-    suspend fun start(directory: File) {
+    suspend fun start(asrFiles: RecognizerFiles, translationModel: File) {
         publish(state)
-        recognizer = withContext(asrWorker) { LocalRecognizer(directory) }
+        recognizer = withContext(asrWorker) { LocalRecognizer(asrFiles) }
         check(!stopped) { "字幕已停止" }
         val call = NativeCall(120_000)
         activeCall = call
-        try { translator = withContext(mtWorker) { LocalTranslator(directory, call) } }
+        try { translator = withContext(mtWorker) { LocalTranslator(translationModel, call) } }
         finally { call.close(); activeCall = null }
         check(!stopped) { "字幕已停止" }
         beganAt = SystemClock.elapsedRealtime()
@@ -134,7 +134,7 @@ internal class CaptionSession(
             pump()
         }
         if (result.final) {
-            gate = SourceGate(); revision = 0; utteranceKeys.clear(); segmentStart = atMs
+            gate = SourceGate(language = selection.languages.source); revision = 0; utteranceKeys.clear(); segmentStart = atMs
         }
     }
 
@@ -161,7 +161,7 @@ internal class CaptionSession(
                 val call = NativeCall((8_000 - (now() - request.segment.endMs)).coerceAtLeast(1))
                 activeCall = call
                 val translated = try {
-                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, chineseSource, call) }
+                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages.target, call) }
                 } catch (_: Exception) { null }
                 finally { call.close(); activeCall = null }
                 queue.complete(request.segment.key, translated, maxOf(now(), request.segment.endMs))?.let(::outcome)

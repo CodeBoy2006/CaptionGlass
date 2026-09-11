@@ -12,6 +12,8 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.provider.Settings
+import com.captionglass.engine.Language
+import com.captionglass.engine.LanguagePair
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,10 +39,19 @@ class PlaybackCaptureService : Service() {
         }
         if (started || mutableState.value.active || ModelPack.importing) { if (!started) stopSelf(); return START_NOT_STICKY }
         started = true
-        val chinese = intent.getBooleanExtra(EXTRA_CHINESE, false)
-        mutableState.value = CaptureState(active = true, chineseSource = chinese, status = CaptureStatus.PREPARING)
+        val catalog = ModelCatalog(this)
+        val selection = runCatching {
+            ModelSelection(LanguagePair(checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_SOURCE))),
+                checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_TARGET)))),
+                checkNotNull(intent.getStringExtra(EXTRA_RECOGNIZER))).also { check(catalog.valid(it)) }
+        }.getOrElse {
+            mutableState.value = CaptureState(status = CaptureStatus.START_FAILED)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        mutableState.value = CaptureState(active = true, selection = selection, status = CaptureStatus.PREPARING)
         try {
-            startForeground(1, notification(chinese), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            startForeground(1, notification(selection), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(EXTRA_PROJECTION, Intent::class.java)
                 else @Suppress("DEPRECATION") intent.getParcelableExtra(EXTRA_PROJECTION)
             check(data != null && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -50,7 +61,7 @@ class PlaybackCaptureService : Service() {
             overlay = view
             view.render(mutableState.value)
             if (Settings.canDrawOverlays(this)) view.show()
-            val pipeline = CaptionSession(scope, chinese, view::pages) {
+            val pipeline = CaptionSession(scope, selection, view::pages) {
                 mutableState.value = it
                 view.render(it)
             }
@@ -58,11 +69,12 @@ class PlaybackCaptureService : Service() {
             scope.launch {
                 try {
                     withContext(Dispatchers.IO) {
-                        try { ModelPack.verify(this@PlaybackCaptureService) }
+                        try { catalog.required(selection).forEach { ModelPack.verify(this@PlaybackCaptureService, it) } }
                         catch (_: Exception) { throw CaptureFailure(CaptureStatus.PACK_INVALID) }
                     }
                     check(!stopping) { "字幕已停止" }
-                    try { pipeline.start(ModelPack.directory(this@PlaybackCaptureService)) }
+                    try { pipeline.start(catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService),
+                        catalog.translator.file(this@PlaybackCaptureService, "model")) }
                     catch (_: Exception) {
                         if (!stopping) requestStop(CaptureStatus.LOAD_FAILED)
                         return@launch
@@ -90,7 +102,7 @@ class PlaybackCaptureService : Service() {
                 }
             }
         } catch (e: Exception) {
-            mutableState.value = CaptureState(chineseSource = chinese,
+            mutableState.value = CaptureState(selection = selection,
                 status = if (e is SecurityException) CaptureStatus.PERMISSION_LOST else CaptureStatus.START_FAILED)
             projection?.let { it.unregisterCallback(callback); it.stop() }; projection = null
             overlay?.close(); overlay = null
@@ -168,7 +180,7 @@ class PlaybackCaptureService : Service() {
         overlay?.close()
         runCatching { recorder?.stop() }
     }
-    private fun notification(chinese: Boolean): Notification {
+    private fun notification(selection: ModelSelection): Notification {
         val channel = "live-captions"
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(channel, getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW))
@@ -176,7 +188,7 @@ class PlaybackCaptureService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, channel).setSmallIcon(R.drawable.ic_caption).setColor(getColor(R.color.brand))
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(if (chinese) R.string.direction_zh_en else R.string.direction_en_zh))
+            .setContentText("${selection.languages.source.label} → ${selection.languages.target.label}")
             .setShowWhen(true).setWhen(System.currentTimeMillis()).setUsesChronometer(true)
             .setCategory(Notification.CATEGORY_SERVICE).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop),
@@ -193,7 +205,9 @@ class PlaybackCaptureService : Service() {
     }
     companion object {
         const val EXTRA_PROJECTION = "projection"
-        const val EXTRA_CHINESE = "chineseSource"
+        const val EXTRA_SOURCE = "source_language"
+        const val EXTRA_TARGET = "target_language"
+        const val EXTRA_RECOGNIZER = "recognizer_id"
         const val ACTION_STOP = "com.captionglass.STOP_CAPTURE"
         private val mutableState = MutableStateFlow(CaptureState())
         val state = mutableState.asStateFlow()

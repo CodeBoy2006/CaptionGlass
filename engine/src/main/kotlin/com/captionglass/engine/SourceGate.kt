@@ -9,7 +9,7 @@ data class SourceUpdate(
 )
 
 /** One utterance per instance. Feed cumulative hypotheses from distinct new-audio revisions. */
-class SourceGate(private val maxWaitMs: Long = 5_500) {
+class SourceGate(private val maxWaitMs: Long = 5_500, private val language: Language = Language.EN) {
     init { require(maxWaitMs > 0) }
 
     private var previous = ""
@@ -46,6 +46,9 @@ class SourceGate(private val maxWaitMs: Long = 5_500) {
             correctionRequired || !stable.startsWith(committedPrefix) -> null
             isFinal -> remainder.trim().ifBlank { null }
             boundary > 0 -> remainder.take(boundary).trim()
+            // Japanese predicates and negation often arrive last. Until separately calibrated,
+            // commit at sentence punctuation or the acoustic endpoint, never a timed prefix.
+            language == Language.JA -> null
             waited < maxWaitMs + 1_500 && Regex("(?i).*\\b(and|or|but|because|if|when|to|the|a|an|will|would|can|could|not|don't|doesn't|isn't)\\s*$")
                 .matches(remainder) -> null
             waited >= maxWaitMs -> remainder.trim().ifBlank { null }

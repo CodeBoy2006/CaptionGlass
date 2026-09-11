@@ -2,6 +2,7 @@ package com.captionglass.nativebridge
 
 import java.io.Closeable
 import java.io.File
+import com.captionglass.engine.Language
 
 /** Created before dispatch; cancel never resets a flag or frees an in-flight callback. */
 class NativeCall(timeoutMs: Long) : Closeable {
@@ -16,16 +17,16 @@ class NativeCall(timeoutMs: Long) : Closeable {
 }
 
 /** One owner worker; close only after translation has returned, including cancellation. */
-class LocalTranslator(directory: File, call: NativeCall) : Closeable {
+class LocalTranslator(model: File, call: NativeCall) : Closeable {
     private var handle = NativeBindings.load(
-        File(directory, "Hy-MT2-1.8B-Q4_K_M.gguf").path.toByteArray(), call.handle)
+        model.path.toByteArray(), call.handle)
 
-    fun translate(source: String, context: List<String>, chineseSource: Boolean,
+    fun translate(source: String, context: List<String>, target: Language,
                   call: NativeCall, maxTokens: Int = 256): String {
         require(source.isNotBlank() && source.length <= 8_192 && maxTokens in 1..256)
         require(source.any(Char::isLetterOrDigit)) { "No translatable source content" }
         check(handle != 0L)
-        val language = if (chineseSource) "English" else "Chinese"
+        val language = target.promptName
         val instruction = if (context.isEmpty())
             "Translate the following text into $language. Note that you should only output the translated result without any additional explanation:\n\n$source"
         else "Translate only [Source Text] into $language. Use the background only for context. " +

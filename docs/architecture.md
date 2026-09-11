@@ -12,13 +12,14 @@
 flowchart LR
     app[app / Android 生命周期与 UI] --> engine[engine / 纯 Kotlin 规则]
     app --> native[native / sherpa 与 llama.cpp]
+    native --> engine
 ```
 
 | 模块 | M1 实现 |
 | --- | --- |
 | `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、离线语言包导入 |
 | `engine` | 原文稳定/提交/修订、单工作器队列、分页阅读调度、确定性回归检查 |
-| `native` | 固定版本 sherpa Kotlin/JNI、llama.cpp CPU C++ 绑定、句柄与取消 token |
+| `native` | 固定版本 sherpa Kotlin/JNI、llama.cpp CPU C++ 绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
 `engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。M0 固定文本预览已移除。
 
@@ -63,7 +64,7 @@ sherpa 内部有状态 `LinearResample` 将 48 kHz 输入转换到 16 kHz 特征
 
 每个会话有 UUID，`SegmentKey(sessionId, sequence, revision)` 完整匹配才接受结果。sequence 始终递增；修正后的整体重译使用新 sequence 和 revision=1，不复用旧任务身份。
 
-每个 utterance 一个 SourceGate，只接受更高的新音频 revision。两次假设的共同前缀为稳定原文；英文半词不会被当成稳定前缀。标点分句保守处理常见缩写、小数和姓名首字母；最长等待 5.5 秒，对明显未闭合的英文尾部额外等待最多 1.5 秒。声学 endpoint 确认最终残段。规则是可测试的启发式，不能保证语义总是正确。
+每个 utterance 一个 SourceGate，绑定会话源语言，只接受更高的新音频 revision。两次假设的共同前缀为稳定原文；英文半词不会被当成稳定前缀。标点分句保守处理常见缩写、小数和姓名首字母；最长等待 5.5 秒，对明显未闭合的英文尾部额外等待最多 1.5 秒。日语例外：仅在稳定句末标点或声学 endpoint 提交，避免计时器截走句末谓语和否定；无停顿长句的等待更长，需独立校准。声学 endpoint 确认最终残段。规则是可测试的启发式，不能保证语义总是正确。
 
 只补上的句号等纯标点尾部不构成新的翻译任务；它仍被 gate 消费，避免重复提交。native 接口也拒绝没有文字或数字的片段，防止把历史上下文误当成待翻译内容。
 
@@ -79,7 +80,7 @@ MT 默认 3 个等待槽和 1 个 active，确认后最多等待 8 秒。上下�
 
 ### 3.5 阅读与悬浮窗
 
-Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，阅读调度每页停留 1.6–6 秒。中英阅读时间分别估算：汉字每码点 100 ms，其他码点 50 ms；取原文和译文较长的一侧，不把两侧时间相加。这是待阅读测试校准的启发式，不代表每位用户都能以此速度读完。完整文本保留在记录，长译文分多页，不用省略号代替后半句。队列满或迟到结果更新阅读积压提示；显示序号不会倒退。字体/显示配置改变后重新测量待显示内容。
+Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，阅读调度每页停留 1.6–6 秒。各侧阅读时间分别估算：汉字、平假名、片假名和韩文每码点 100 ms，其他码点 50 ms；取原文和译文较长的一侧，不把两侧时间相加。这是待阅读测试校准的启发式，不代表每位用户都能以此速度读完。完整文本保留在记录，长译文分多页，不用省略号代替后半句。队列满或迟到结果更新阅读积压提示；显示序号不会倒退。字体/显示配置改变后重新测量待显示内容。
 
 悬浮层有两个原生 Window：正文卡片默认 `FLAG_NOT_TOUCHABLE`，其上方居中的 48 dp 把手支持拖动（靠近水平中心时吸附）与轻点切换。穿透时正文窗口 alpha 不超过系统允许的触摸遮挡阈值；Android 12+ 仅设背景透明度不足以允许穿透。拦截模式下卡片可触摸、不透明并以绿色描边标识，轻点卡片或把手回到穿透。尚无文字时卡片收缩为图标加短词的状态胶囊；未稳定的临时原文以较暗颜色显示，译文位置用脉动圆点占位；长字幕的分页以卡片底部细分段条表示。[WindowManager 触摸规则](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_NOT_TOUCHABLE)
 
@@ -87,11 +88,12 @@ Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，
 
 ## 4. 固定模型与运行库
 
-`models/zh-en.json` 是 M1 实验性语言包，固定 matched files、revision、大小、SHA-256 与 runtime commit。它通过指定真机的合成语音基础验证，不代表跨机型质量或长时性能已达标。
+`models/catalog.json` 是 APK 自带的模型目录，固定用途、语言能力、文件角色、matched files、revision、大小、SHA-256 与 runtime commit。中英 X-ASR、八语种 PengChengStarling 与共用的 Hy-MT2 分别安装，运行时依旧只加载一个 ASR 和一个 MT。初始中英链路通过指定真机的合成语音基础验证；新语种的验证记录见验收文档，不能外推跨机型质量或长时性能。
 
 | 部分 | 固定配置 |
 | --- | --- |
 | ASR | X-ASR zh/en 480 ms；sherpa-onnx v1.13.8 / `11afbd0…`；ORT 1.28.2；CPU 单线程、greedy search |
+| ASR（日语及多语） | PengChengStarling 八语种 streaming Zipformer；sherpa 官方 int8 encoder/joiner + matched decoder/tokens，revision `c6726c1…`；沿用同一 sherpa/ORT CPU 单线程；modified beam search，4 条 active paths |
 | MT | Hy-MT2 1.8B Q4_K_M；llama.cpp v0.4.0 / `5266f24…`；CPU 3 线程；context 2,048、batch 256、ubatch 64 |
 | Android native | NDK 27.1.12297006、CMake 3.22.1、arm64-v8a / ARMv8-A 基线；16 KB LOAD 对齐 |
 
@@ -99,12 +101,20 @@ sherpa 官方 Android archive 和源代码 tar 的哈希固定在 `scripts/prepa
 
 翻译使用模型文件内的 Hy-MT2 单用户模板。BOS、角色分隔符单独识别为 special tokens；源文本与历史始终 `parse_special=false`，不能注入角色控制 token。采样固定 top-k 20、top-p 0.6、temperature 0.7、repeat penalty 1.05。JNI 用 UTF-8 byte arrays 传输输入输出，不用 modified UTF-8 的 `NewStringUTF` 传中文结果。[X-ASR 模型卡](https://huggingface.co/GilgameshWind/X-ASR-zh-en)、[Hy-MT2 GGUF](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF)
 
-### 4.1 离线安装
+选型依据：PengChengStarling 提供真正的八语种流式 Transducer，sherpa 项目已有对应的 matched int8 文件与导出脚本，可复用 OnlineRecognizer 及现有音频缓冲、端点、停止逻辑。当前采用固定运行库的通用解码接口；源语言选择用于能力匹配和分句，并不强制模型的声学语言识别。上游定制服务另有 langtag 初始化接口，固定 sherpa Zipformer Kotlin 接口未提供该能力。本次不手改预编译 JNI 或偷偷变更权重。合成日语对照中 beam 比 greedy 保留更多内容，但仍有错误和漏词，详见验收记录。[上游模型卡](https://huggingface.co/stdo/PengChengStarling)、[sherpa 转换文件](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10)、[上游部署与 langtag 说明](https://github.com/PCL-Voice/PengChengStarling)
 
-M1 只做 SAF 文件夹导入及开发机部署。导入只接受清单中五个文件名，复制到应用私有 staging，严格检查尺寸和 SHA-256，随后以同目录 rename 切换；失败保留旧包。校验标记绑定完整清单哈希；开始推理前重新校验权重。运行或回收期间不允许替换包。应用无 INTERNET 权限、无账号、不保存原始音频，不动态下载 `.so`。
+Hy-MT2 的官方支持表列出 38 个语言／文字变体代码，本次按完整表建立目标枚举，并使用英文全名生成其单用户模板。它们是声明能力，只有验收文档列出的方向执行了本应用真实推理检查；所有目标并非都能作为语音输入。[Hy-MT2 模型卡与提示词](https://huggingface.co/tencent/Hy-MT2-1.8B)
+
+### 4.1 选择与离线安装
+
+`Language` 固定 Hy-MT2 官方清单的语言代码、提示词全名和显示名称；输入能力与输出能力分别过滤。`ModelSelection` 保存源、目标及识别模型 ID；同语方向、未知代码、模型不支持的输入都被拒绝。选择日语时匹配支持日语的流式模型，目标不具备 ASR 能力时禁用交换。界面不暴露线程、量化或后端参数。SharedPreferences 保存这三个简单偏好，权限或 SAF 回调等待状态随 Activity 保存；文件夹回调绑定发起时的模型 ID。运行、授权、导入、回收期间均锁定选择。
+
+服务再次验证 Intent 中的代码和模型能力，创建不可变会话快照。通知与界面显示该快照，ASR 从清单文件角色得到路径，MT 使用固定目标语言全名生成提示词；句柄和 worker 所有权不变。
+
+SAF 每次导入一项模型。只接受该模型的固定文件名（ASR 四个，MT 一个），复制到应用私有 `files/models/<id>-staging`，严格检查尺寸和 SHA-256，再以同目录 rename 激活为 `files/models/<id>`；失败保留旧模型，进程中断通过对应 backup 恢复。各模型的 token 文件互不覆盖，翻译权重仅一份。校验标记绑定该模型完整清单哈希；开始推理前只重新校验此次会话所需的 ASR 和 MT。旧合并语言包需重新导入，未增加存储迁移兼容层。应用无 INTERNET 权限、无账号、不保存原始音频，不动态下载 `.so`。
 
 完整下载器、断点续传、用户取消和持久任务恢复留给 M2。native/model 许可与第三方说明见 `third_party/`，公开分发前还需完整传递依赖许可审计。
 
 ## 5. 后续工作
 
-暂停/回看、Room 与文字保留选择、TXT/SRT/VTT、相关术语、完整安装管理、30–60 分钟热稳态、多设备画像尚未实现。已知 ASR 错词与延迟目标差距必须保留在验收记录。任何日语、STQ 或加速后端均须独立验证，不能把短样本吞吐当作持续体验达标。详见 [验收计划](validation.md)。
+暂停/回看、Room 与文字保留选择、TXT/SRT/VTT、相关术语、完整安装管理、30–60 分钟热稳态、多设备画像尚未实现。已知 ASR 错词与延迟目标差距必须保留在验收记录。日语等新语种的持续性能、STQ 或加速后端均须独立验证，不能把短样本吞吐当作持续体验达标。详见 [验收计划](validation.md)。

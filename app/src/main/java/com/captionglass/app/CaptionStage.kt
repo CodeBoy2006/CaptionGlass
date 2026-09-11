@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.captionglass.engine.CaptionPage
+import com.captionglass.engine.LanguagePair
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -56,7 +57,7 @@ private val SourceStyle = TextStyle(fontSize = 16.sp, lineHeight = 23.sp)
 
 /** In-app mirror of the floating caption: status on top, translation above source. */
 @Composable
-internal fun CaptionStage(capture: CaptureState, chineseSource: Boolean, modifier: Modifier = Modifier) {
+internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, modifier: Modifier = Modifier) {
     Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = LocalStage.current,
         border = if (isSystemInDarkTheme()) BorderStroke(1.dp, Translation.copy(alpha = 0.07f)) else null) {
         Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 24.dp)) {
@@ -72,7 +73,7 @@ internal fun CaptionStage(capture: CaptureState, chineseSource: Boolean, modifie
                     when (shown) {
                         2 -> capture.page?.let { PageText(it) }
                         1 -> LiveText(capture.stable, capture.provisional)
-                        else -> GhostLanes(chineseSource, capture.active && capture.status == CaptureStatus.SILENT)
+                        else -> GhostLanes(languages, capture.active && capture.status == CaptureStatus.SILENT)
                     }
                 }
             }
@@ -162,13 +163,13 @@ private fun LiveText(stable: String, provisional: String) {
 
 /** Idle lanes preview the layout in the chosen languages without inventing caption text. */
 @Composable
-private fun GhostLanes(chineseSource: Boolean, silent: Boolean) {
+private fun GhostLanes(languages: LanguagePair, silent: Boolean) {
     Column {
-        Crossfade(chineseSource, label = "lanes") { chinese ->
+        Crossfade(languages, label = "lanes") { pair ->
             Column {
-                Text(stringResource(if (chinese) R.string.language_en else R.string.language_zh),
+                Text(pair.target.label,
                     style = TranslationStyle, color = Translation.copy(alpha = 0.34f))
-                Text(stringResource(if (chinese) R.string.language_zh else R.string.language_en),
+                Text(pair.source.label,
                     style = SourceStyle, color = Translation.copy(alpha = 0.26f))
             }
         }
