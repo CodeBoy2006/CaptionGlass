@@ -136,21 +136,26 @@ internal class CaptionSession(
             caption.translation?.let { paginate(it, true) }.orEmpty())
         // ponytail: last 200 terminal outcomes in memory; durable history/export belongs to M2.
         update { copy(history = (history + caption).sortedBy { it.segment.key.sequence }.takeLast(200), outcomes = outcomes + 1,
+            page = if (stopped) null else scheduler.tick(now()),
             translationBacklog = translationBacklog + if (caption.untranslatedReason == UntranslatedReason.BACKLOG) 1 else 0,
             readingBehind = readingBehind + if (accepted) 0 else 1) }
     }
 
     private fun pump() {
-        if (stopped || mtJob?.isActive == true || translator == null) return
-        val request = queue.take() ?: return
-        val call = NativeCall((8_000 - (now() - request.segment.endMs)).coerceAtLeast(1))
-        activeCall = call
+        if (stopped || mtJob?.isActive == true || translator == null || queue.pendingCount == 0) return
         mtJob = scope.launch {
-            val translated = try {
-                withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, chineseSource, call) }
-            } catch (_: Exception) { null }
-            finally { call.close(); activeCall = null }
-            queue.complete(request.segment.key, translated, maxOf(now(), request.segment.endMs))?.let(::outcome)
+            // Drain on completion, without waiting for the display ticker between requests.
+            while (!stopped) {
+                queue.expire(now()).forEach(::outcome)
+                val request = queue.take() ?: break
+                val call = NativeCall((8_000 - (now() - request.segment.endMs)).coerceAtLeast(1))
+                activeCall = call
+                val translated = try {
+                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, chineseSource, call) }
+                } catch (_: Exception) { null }
+                finally { call.close(); activeCall = null }
+                queue.complete(request.segment.key, translated, maxOf(now(), request.segment.endMs))?.let(::outcome)
+            }
         }
     }
 

@@ -89,7 +89,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
     auto * call = reinterpret_cast<Call *>(token);
     try {
         check(call);
-        llama_memory_clear(llama_get_memory(m->ctx), true);
+        // Success and failure both wipe the cache before returning to the sole caller.
         llama_set_abort_callback(m->ctx, aborted, call);
         const auto * vocab = llama_model_get_vocab(m->model);
         // Exact pinned Hy-MT2 template. User content cannot inject special role tokens.

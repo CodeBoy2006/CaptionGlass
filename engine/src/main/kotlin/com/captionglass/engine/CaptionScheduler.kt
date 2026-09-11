@@ -7,9 +7,11 @@ class CaptionScheduler(
     private val capacity: Int = 4,
     private val minDwellMs: Long = 1_600,
     private val maxDwellMs: Long = 6_000,
-    private val millisecondsPerCodePoint: Long = 100,
+    private val millisecondsPerLatinCodePoint: Long = 50,
+    private val millisecondsPerHanCodePoint: Long = 100,
 ) {
-    init { require(capacity > 0 && minDwellMs > 0 && maxDwellMs >= minDwellMs && millisecondsPerCodePoint > 0) }
+    init { require(capacity > 0 && minDwellMs > 0 && maxDwellMs >= minDwellMs &&
+        millisecondsPerLatinCodePoint > 0 && millisecondsPerHanCodePoint > 0) }
     private val pending = ArrayDeque<List<CaptionPage>>()
     private val pages = ArrayDeque<CaptionPage>()
     private var current: CaptionPage? = null
@@ -56,10 +58,15 @@ class CaptionScheduler(
         if (pages.isEmpty() && pending.isNotEmpty()) pages.addAll(pending.removeFirst())
         current = pages.removeFirstOrNull()
         current?.let {
-            val text = it.translation.orEmpty() + it.source
-            val count = text.codePointCount(0, text.length).toLong()
-            showUntilMs = nowMs + (count * millisecondsPerCodePoint).coerceIn(minDwellMs, maxDwellMs)
+            // ponytail: pace parallel bilingual text by the slower side; calibrate with reader trials.
+            val dwell = maxOf(readingTime(it.source), readingTime(it.translation.orEmpty()))
+            showUntilMs = nowMs + dwell.coerceIn(minDwellMs, maxDwellMs)
         }
         return current
     }
+
+    private fun readingTime(text: String): Long = text.codePoints().mapToLong {
+        if (Character.UnicodeScript.of(it) == Character.UnicodeScript.HAN) millisecondsPerHanCodePoint
+        else millisecondsPerLatinCodePoint
+    }.sum()
 }

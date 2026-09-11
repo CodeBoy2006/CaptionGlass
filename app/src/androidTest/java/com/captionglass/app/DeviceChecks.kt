@@ -49,6 +49,10 @@ class DeviceChecks : Instrumentation() {
                     replay("zh", true)
                 }
                 if (mode in listOf("all", "fallback")) fallbackCheck()
+                if (mode == "latency") {
+                    replay("en", false, repetitions = 4)
+                    replay("zh", true, repetitions = 4)
+                }
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") })
         } catch (e: Throwable) {
@@ -97,28 +101,53 @@ class DeviceChecks : Instrumentation() {
             report("PASS: pre-dispatch cancellation, deadline, output budget, reuse after abort")
         } finally { model.close() }
     }
-    private suspend fun replay(name: String, chinese: Boolean, stopAtMs: Long? = null) = withContext(Dispatchers.Main) {
-        val samples = withContext(Dispatchers.IO) { readWave(File(targetContext.filesDir, "fixtures/$name.wav")) }
+    private suspend fun replay(name: String, chinese: Boolean, stopAtMs: Long? = null, repetitions: Int = 1) = withContext(Dispatchers.Main) {
+        val samples = withContext(Dispatchers.IO) {
+            val input = readWave(File(targetContext.filesDir, "fixtures/$name.wav"))
+            // Explicit test silence lets all reading pages finish after the repeated speech.
+            if (repetitions == 1) input else FloatArray(input.size * repetitions + 16_000 * 45) {
+                if (it < input.size * repetitions) input[it % input.size] else 0f
+            }
+        }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val overlay = SubtitleOverlay(targetContext)
         var latest = CaptureState()
         val reported = mutableSetOf<Long>()
+        val readyAt = mutableMapOf<Long, Long>()
+        val displayed = mutableSetOf<Pair<Long, Int>>()
+        val displayWaits = mutableListOf<Long>()
         var firstSource = 0L
         var firstTranslation = 0L
         var began = 0L
         var stopping = false
         val session = CaptionSession(scope, chinese, overlay::pages) { state ->
             if (stopping) check(state.page == null) { "Stop restored a subtitle" }
+            val elapsed = SystemClock.elapsedRealtime() - began
+            if (mode == "latency" && state.confirmed > latest.confirmed)
+                report("COMMIT $name sequence=${state.confirmed - 1} at_ms=$elapsed")
             latest = state
             if (firstSource == 0L && state.stable.isNotBlank()) firstSource = SystemClock.elapsedRealtime() - began
             state.history.forEach { caption ->
                 if (reported.add(caption.segment.key.sequence)) {
+                    readyAt[caption.segment.key.sequence] = elapsed
                     if (caption.translation != null && firstTranslation == 0L) firstTranslation = SystemClock.elapsedRealtime() - began
                     report("REPLAY $name end_ms=${caption.segment.endMs} result_ms=${SystemClock.elapsedRealtime() - began}: ${caption.segment.source} => ${caption.translation ?: caption.untranslatedReason}")
                 }
             }
+            if (mode == "latency") {
+                overlay.render(state)
+                state.page?.let { page ->
+                    val sequence = page.caption.segment.key.sequence
+                    if (displayed.add(sequence to page.index)) {
+                        val wait = elapsed - checkNotNull(readyAt[sequence])
+                        displayWaits += wait
+                        report("DISPLAY $name sequence=$sequence page=${page.index + 1}/${page.total} at_ms=$elapsed ready_wait_ms=$wait")
+                    }
+                }
+            }
         }
         try {
+            if (mode == "latency") overlay.show()
             session.start(ModelPack.directory(targetContext))
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
@@ -136,6 +165,7 @@ class DeviceChecks : Instrumentation() {
                     break
                 }
             }
+            if (mode == "latency") check(latest.page == null) { "Reading has not drained after the trailing test silence" }
             session.close()
             check(latest.confirmed == latest.outcomes && latest.confirmed > 0)
             if (stopAtMs == null) check(latest.history.any { it.translation != null }) { "No successful translation: ${latest.history}" }
@@ -143,13 +173,20 @@ class DeviceChecks : Instrumentation() {
             val source = latest.history.joinToString(" ") { it.segment.source }
             check(if (chinese) source.contains("公园") else source.contains("subtitles", ignoreCase = true)) { "Unexpected ASR: $source" }
             report("REPLAY $name stop_at_ms=$stopAtMs audio_ms=${position * 1000L / 16000} elapsed_ms=${SystemClock.elapsedRealtime() - began} first_source_ms=$firstSource first_translation_ms=$firstTranslation confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
+            if (mode == "latency") {
+                check(latest.history.all { it.translation != null }) { "Untranslated benchmark segment: ${latest.history}" }
+                val expectedPages = latest.history.sumOf { maxOf(overlay.pages(it.segment.source, false).size,
+                    overlay.pages(checkNotNull(it.translation), true).size) }
+                check(displayed.size == expectedPages && latest.readingBehind == 0) { "Reading coverage ${displayed.size}/$expectedPages, overflow=${latest.readingBehind}" }
+                report("LATENCY $name pages=${displayed.size} ready_wait_mean_ms=${displayWaits.average().toLong()} ready_wait_max_ms=${displayWaits.maxOrNull()}")
+            }
             val longText = "Long subtitles must be paged completely. 很长的字幕需要完整分页。".repeat(30)
             check(overlay.pages(longText, true).joinToString("") == longText)
         } catch (e: Throwable) {
             session.stop("测试结束")
             runCatching { session.close() }
             throw e
-        } finally { scope.cancel() }
+        } finally { overlay.close(); scope.cancel() }
     }
 
     private suspend fun fallbackCheck() = withContext(Dispatchers.Default) {
