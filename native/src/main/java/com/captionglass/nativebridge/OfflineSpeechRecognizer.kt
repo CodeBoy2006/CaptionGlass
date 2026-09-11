@@ -2,6 +2,8 @@ package com.captionglass.nativebridge
 
 import com.captionglass.engine.Language
 import com.captionglass.engine.SpeechWindow
+import com.captionglass.engine.AudioWindow
+import com.captionglass.engine.WindowTranscript
 import com.k2fsa.sherpa.onnx.*
 import java.io.Closeable
 
@@ -13,6 +15,7 @@ internal class OfflineSpeechRecognizer(private val files: RecognizerFiles) : Clo
     private var resampler = 0L
     private var rate = 0
     private val window = SpeechWindow()
+    private val transcript = WindowTranscript()
     private val frame = FloatArray(512)
     private var filled = 0
 
@@ -68,10 +71,22 @@ internal class OfflineSpeechRecognizer(private val files: RecognizerFiles) : Clo
         }
     }
 
-    private fun decode(samples: FloatArray): Hypothesis {
+    private fun decode(window: AudioWindow): Hypothesis {
+        if (window.samples.isEmpty()) {
+            val tail = transcript.finish()
+            return Hypothesis(tail.text, true, tail.offset)
+        }
+        val decoded = recognize(window.samples)
+        val text = transcript.update(decoded.text, window.start, window.start + window.samples.size,
+            decoded.tokenStarts(window.start))
+        if (window.final) transcript.finish()
+        return Hypothesis(text.text, window.final, text.offset)
+    }
+
+    private fun recognize(samples: FloatArray): RecognizedText {
         // Exact digital silence needs no inference; nonzero quiet audio is never discarded.
-        if (samples.all { it == 0f }) return Hypothesis("", true)
-        japanese?.let { return Hypothesis(it.decode(samples), true) }
+        if (samples.all { it == 0f }) return RecognizedText("")
+        japanese?.let { return RecognizedText(it.decode(samples)) }
         val model = checkNotNull(recognizer)
         val stream = model.createStream()
         return try {
@@ -82,7 +97,7 @@ internal class OfflineSpeechRecognizer(private val files: RecognizerFiles) : Clo
             model.decode(stream)
             val result = model.getResult(stream)
             check(files.adapter != "qwen3-asr" || stream.getOption("captionglass_complete") == "1") { "ASR did not reach end of generation" }
-            Hypothesis(result.text.trim(), true)
+            RecognizedText(result.text.trim(), result.tokens.toList(), result.timestamps)
         } finally { stream.release() }
     }
 
@@ -101,6 +116,22 @@ internal class OfflineSpeechRecognizer(private val files: RecognizerFiles) : Clo
         vad?.release(); vad = null
         if (resampler != 0L) AudioResample.release(resampler)
         resampler = 0
+    }
+}
+
+private data class RecognizedText(val text: String, val tokens: List<String> = emptyList(), val times: FloatArray = FloatArray(0)) {
+    fun tokenStarts(start: Long): List<Pair<Int, Long>> {
+        if (tokens.size != times.size || tokens.isEmpty()) return emptyList()
+        fun normalized(value: String) = value.filter { it.isLetterOrDigit() }.map { it.lowercaseChar() }.joinToString("")
+        val pieces = tokens.map { normalized(it.replace('▁', ' ')) }
+        if (pieces.joinToString("") != normalized(text)) return emptyList()
+        val positions = text.indices.filter { text[it].isLetterOrDigit() }
+        var offset = 0
+        return pieces.mapIndexedNotNull { i, piece ->
+            val position = positions.getOrNull(offset)
+            offset += piece.length
+            if (piece.isEmpty() || position == null) null else position to start + (times[i] * 16_000).toLong()
+        }
     }
 }
 

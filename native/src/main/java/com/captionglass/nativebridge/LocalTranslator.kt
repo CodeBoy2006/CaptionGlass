@@ -26,13 +26,18 @@ class LocalTranslator(model: File, private val format: TranslationFormat, call: 
     fun timings(): String { check(handle != 0L); return NativeBindings.timings(handle) }
 
     fun translate(source: String, context: List<String>, pair: LanguagePair,
-                  call: NativeCall, maxTokens: Int = 256): String {
+                  call: NativeCall, maxTokens: Int = 256, onProgress: ((String) -> Unit)? = null): String {
         require(maxTokens in 1..256)
         check(handle != 0L)
         val prompt = format.prompt(source, context, pair)
         return format.result(NativeBindings.translate(handle, prompt.prefix.toByteArray(), prompt.text.toByteArray(),
             prompt.suffix.toByteArray(), prompt.background.toByteArray(), format != TranslationFormat.HY_MT2,
-            call.handle, maxTokens).decodeToString())
+            call.handle, maxTokens, onProgress?.let { progress -> { bytes: ByteArray ->
+                // A tokenizer piece may end halfway through a UTF-8 character.
+                val text = try { bytes.decodeToString(throwOnInvalidSequence = true) }
+                    catch (_: java.nio.charset.CharacterCodingException) { null }
+                text?.let { progress(format.preview(it)) }
+            } }).decodeToString())
     }
     override fun close() { if (handle != 0L) NativeBindings.unload(handle); handle = 0 }
 }
@@ -45,5 +50,5 @@ internal object NativeBindings {
     external fun load(path: ByteArray, call: Long): Long
     external fun unload(model: Long)
     external fun timings(model: Long): String
-    external fun translate(model: Long, prefix: ByteArray, prompt: ByteArray, suffix: ByteArray, background: ByteArray, greedy: Boolean, call: Long, maxTokens: Int): ByteArray
+    external fun translate(model: Long, prefix: ByteArray, prompt: ByteArray, suffix: ByteArray, background: ByteArray, greedy: Boolean, call: Long, maxTokens: Int, progress: ((ByteArray) -> Unit)?): ByteArray
 }

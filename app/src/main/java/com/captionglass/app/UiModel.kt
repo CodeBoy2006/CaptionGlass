@@ -21,6 +21,7 @@ internal object CaptionPalette {
     const val SOURCE = 0xFFB4C0B9.toInt()
     const val MUTED = 0xFF85928B.toInt()
     const val ACCENT = 0xFF78D8AC.toInt()
+    const val PROGRESS = 0xFFCCE4D7.toInt()
     const val WARNING = 0xFFF2C47F.toInt()
 }
 
@@ -47,7 +48,6 @@ internal val CaptureStatus.label: Int
         CaptureStatus.CAPTURE_INTERRUPTED -> R.string.status_capture_interrupted
         CaptureStatus.OVERRUN -> R.string.status_overrun
         CaptureStatus.RECOGNITION_FAILED -> R.string.status_recognition_failed
-        CaptureStatus.ASR_LIMIT -> R.string.status_asr_limit
         CaptureStatus.START_FAILED -> R.string.status_start_failed
     }
 
@@ -65,7 +65,7 @@ internal val CaptureStatus.icon: Int
         CaptureStatus.AUDIO_UNSUPPORTED -> R.drawable.ic_music_off
         CaptureStatus.CAPTURE_INTERRUPTED -> R.drawable.ic_link_off
         CaptureStatus.OVERRUN -> R.drawable.ic_speed
-        CaptureStatus.RECOGNITION_FAILED, CaptureStatus.ASR_LIMIT -> R.drawable.ic_sync_problem
+        CaptureStatus.RECOGNITION_FAILED -> R.drawable.ic_sync_problem
         CaptureStatus.START_FAILED -> R.drawable.ic_error
     }
 
@@ -78,7 +78,6 @@ internal val CaptureStatus.hint: Int?
         CaptureStatus.LOAD_FAILED -> R.string.hint_model_load
         CaptureStatus.OVERRUN -> R.string.hint_overrun
         CaptureStatus.START_FAILED -> R.string.hint_start_failed
-        CaptureStatus.ASR_LIMIT -> R.string.hint_asr_limit
         else -> null
     }
 

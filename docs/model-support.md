@@ -20,14 +20,14 @@
 | `parakeet-ja-ctc-int8` | NVIDIA Parakeet 日语 CTC · 0.6B · INT8 | 0.66 GB | offline-ctc |
 | `japanese-zipformer-base-fp16` | Japanese Zipformer Base · 96.5M · FP16 | 0.20 GB | japanese-zipformer |
 
-Qwen3-ASR、Parakeet 和 Japanese Zipformer 为分段识别，CPU 单线程；需要停顿结束一个窗口，连续语音超过 14 秒会明确停止并提示使用流式模型。所有 MT 使用 Vulkan GPU，不静默回退 CPU。Murasaki 仅开放日语→简体中文；StreamRevise 仅中英日；MiLMMT 使用其 46 语言表。ASR 语言与 MT 源/目标能力分别相交，不将识别的 30/25 种能力直接等同于所有字幕方向。
+Qwen3-ASR、Parakeet 和 Japanese Zipformer 为分段识别，CPU 单线程；约 4 秒提供可修订原文，约 8 秒窗口保留 2 秒重叠自动续接，停顿或 EOF 确认剩余尾句。所有 MT 使用 Vulkan GPU，不静默回退 CPU。Murasaki 仅开放日语→简体中文；StreamRevise 仅中英日；MiLMMT 使用其 46 语言表。ASR 语言与 MT 源/目标能力分别相交，不将识别的 30/25 种能力直接等同于所有字幕方向。
 
 大参数、大量化型号是明确的按需选项，不根据设备内存猜测其速度或可持续使用能力。显示的是文件大小，不是峰值 RAM/VRAM 承诺；加载失败沿既有错误路径返回。
 
 ## 来源与格式核对
 
 - [Murasaki 官方项目](https://github.com/soundstarrain/Murasaki-project)给出 v0.2 8B/14B、v0.3 4B 矩阵。[官方 short 提示](https://github.com/soundstarrain/Murasaki-Translator/blob/main/middleware/murasaki_translator/core/prompt.py)用于字幕；所选三个 GGUF 的头部均实查为 Qwen3 与 ChatML 模板，关闭思考后仍检查响应是否含未闭合思考。官方 HF 权重端点在核对时返回 401，未推断其原因；v0.3 使用 [mradermacher 转换](https://huggingface.co/mradermacher/Murasaki-4B-v0.3-GGUF)，v0.2 使用 [shoutmon 备份](https://huggingface.co/shoutmon/Murasaki-Backup)。8B Q6_K 的 SHA-256 与[原始文件指针](https://huggingface.co/Murasaki-Project/Murasaki-8B-v0.2-GGUF/blob/cc1fd468bf10dd9f9fbeb2f0f2c5f8e19b772684/Murasaki-8B-v0.2-Q6_K.gguf)一致；14B 仅确认备份自身的固定哈希、架构和模板，未重新获得上游原件比对。权重许可 CC-BY-NC-SA-4.0。
-- [febilly StreamRevise v4 GGUF](https://huggingface.co/febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF)为作者发布，hunyuan-dense，含 EOM=120020。使用 greedy 及作者的 cold-start/Recent source utterances 格式。当前仍只翻译已确认语义片段，不开放每次 ASR 临时修订都重译的模式；空译文给出失败终态，不丢弃已确认片段，不把 token 直接上屏。
+- [febilly StreamRevise v4 GGUF](https://huggingface.co/febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF)为作者发布，hunyuan-dense，含 EOM=120020。使用 greedy 及作者的 cold-start/Recent source utterances 格式。当前仍只翻译已确认语义片段，不开放每次 ASR 临时修订都重译的模式；译文按完整 UTF-8 字符增量显示，正常 EOS 后才确认为完成。空译文给出失败终态，不丢弃已确认片段。
 - [Xiaomi MiLMMT-46](https://github.com/xiaomi-research/gemmax)的 v1.0 1B/4B/12B 采用 Gemma3，使用 [mradermacher GGUF](https://huggingface.co/mradermacher/MiLMMT-46-1B-v1.0-GGUF)。严格使用 `Translate this from … to …:` 的裸 completion 和官方英文名称，不加 BOS、Gemma 聊天包装或额外历史。许可是 Gemma；未将 Pretrain 权重当作翻译模型。
 - [Qwen 官方 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)与[sherpa 导出说明](https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/pretrained.html)确定接口。下载使用 [pantinor 0.6B](https://huggingface.co/pantinor/sherpa-onnx-qwen3-asr-0.6b-int8)和[thieunv 1.7B](https://huggingface.co/thieunv/sherpa-onnx-qwen3-asr-1.7B-int8)的匹配 ONNX/tokenizer，均标为社区转换。强制语言使用完整英文名，Filipino 映射为应用 `tl`。本地 sherpa 补丁通过 stream option 暴露正常 EOS；上下文/生成上限、重复坍塌、早退都拒绝作为完整原文。
 - [Japanese Zipformer Base](https://huggingface.co/reazon-research/japanese-zipformer-base-k2-rs35kh-bpe)为 96.5M raw-waveform CTC，并非旧版 ReazonSpeech transducer。采用 [LiteRT 社区导出](https://huggingface.co/litert-community/japanese-zipformer-base-LiteRT)，LiteRT 2.2.0 Interpreter CPU；固定 16 秒输入包含两侧各 0.5 秒 padding、四级 mask，blank=0 的 CTC 解码。不会把社区 GPU 测速当作本应用 CPU 表现。
@@ -53,8 +53,10 @@ Qwen3-ASR、Parakeet 和 Japanese Zipformer 为分段识别，CPU 单线程；�
 | Japanese Zipformer Base | 运行成功，但相同三句样本仅得到「はいい天気です」，有明显漏句，质量未通过；详情和型号行提示暂不建议连续字幕 |
 | 手机 HTTPS 下载 | 开启代理后重试通过：实际固定文件下载与哈希校验成功，HTTP 错误仍保留已安装模型。此前直连检查失败，安装器逻辑未修改 |
 
-Qwen/Parakeet 的数值是从合成音频开始到本应用原文/译文发布的单次观察，不是目标应用物理呈现或持续实时达标。分段等待明显长于真正流式模型。Japanese Zipformer 的 padding、mask、词表和输入类型已与导出说明逐项核对，上游 `preprocessor_config.json` 为 `do_normalize=false`；目前未定位漏句原因，不以接口冒烟通过冒充质量验收。
+Qwen/Parakeet 的数值是从合成音频开始到本应用原文/译文发布的单次观察，不是目标应用物理呈现或持续实时达标。上述时延记录来自此前仅在停顿后识别的版本，不代表当前连续窗口版本。Japanese Zipformer 的 padding、mask、词表和输入类型已与导出说明逐项核对，上游 `preprocessor_config.json` 为 `do_normalize=false`；目前未定位漏句原因，不以接口冒烟通过冒充质量验收。
 
 Murasaki v0.2 8B/14B、MiLMMT 4B/12B、Qwen3-ASR 1.7B、Parakeet v2 未在本次设备上加载实测；仅完成固定工件及对应适配器接入。Murasaki 14B 备份也尚缺独立上游原件比对。所有新型号仍缺多人、口音、噪声、长句和 30–60 分钟热稳态验收。
 
 本地详细日志位于 `artifacts/adapter-*.log`、`pipeline-*-final.log`、`qwen-completeness-final.log`、`model-network-proxy-final.log` 与 `baseline-*-final.log`，未进入 Git。
+
+2026-09-12 的连续窗口与流式阅读补充检查见 [验收记录 2.10](validation.md#210-连续窗口与流式阅读)：Qwen、Parakeet 日语和 X-ASR 均通过超过 20 秒的连续接续及提前停止计数；真实流式译文、30 秒阅读保留、滚动位置、横屏大字号通过。重复锚点完整不代表逐字无误：Qwen 接缝仍有错词，Parakeet 日语无标点使翻译首显约 37 秒，MiLMMT 对重复长段仍有译文压缩。没有把这些观察作为质量通过或持续实时达标。

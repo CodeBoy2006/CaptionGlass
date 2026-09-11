@@ -43,7 +43,12 @@ static std::string bytes(JNIEnv * env, jbyteArray input) {
     return s;
 }
 static void fail(JNIEnv * env, const std::exception & e) {
-    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
+    if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), e.what());
+}
+static jbyteArray output_bytes(JNIEnv * env, const std::string & output) {
+    auto result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (result) env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()), reinterpret_cast<const jbyte *>(output.data()));
+    return result;
 }
 #define JNI(name) Java_com_captionglass_nativebridge_NativeBindings_##name
 extern "C" JNIEXPORT jlong JNICALL JNI(newCall)(JNIEnv *, jobject, jlong ms) {
@@ -115,7 +120,7 @@ static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::s
     return tokens;
 }
 extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jlong model,
-                                                       jbyteArray prefix, jbyteArray input, jbyteArray ending, jbyteArray background, jboolean greedy, jlong token, jint limit) {
+                                                       jbyteArray prefix, jbyteArray input, jbyteArray ending, jbyteArray background, jboolean greedy, jlong token, jint limit, jobject progress) {
     auto * m = reinterpret_cast<Model *>(model);
     auto * call = reinterpret_cast<Call *>(token);
     if (!m->usable) {
@@ -124,6 +129,13 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
     }
     try {
         check(call);
+        jmethodID callback = nullptr;
+        if (progress) {
+            auto type = env->GetObjectClass(progress);
+            callback = env->GetMethodID(type, "invoke", "(Ljava/lang/Object;)Ljava/lang/Object;");
+            env->DeleteLocalRef(type);
+            if (!callback) throw std::runtime_error("progress_callback_failed");
+        }
         llama_perf_context_reset(m->ctx);
         // Success and failure both wipe the cache before returning to the sole caller.
         llama_set_abort_callback(m->ctx, aborted, call);
@@ -169,6 +181,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
         }
         std::string output;
         bool complete = false;
+        auto last_progress = Clock::time_point{};
         for (int i = 0; i < limit; ++i) {
             check(call);
             const auto t = llama_sampler_sample(sampler.get(), m->ctx, -1);
@@ -182,6 +195,15 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
                 output.append(large.data(), n);
             } else output.append(piece, n);
             if (output.size() > 32768) throw std::runtime_error("output_budget");
+            if (callback && Clock::now() - last_progress >= std::chrono::milliseconds(120)) {
+                auto value = output_bytes(env, output);
+                if (!value) throw std::runtime_error("progress_allocation_failed");
+                auto unit = env->CallObjectMethod(progress, callback, value);
+                env->DeleteLocalRef(value);
+                if (unit) env->DeleteLocalRef(unit);
+                if (env->ExceptionCheck()) throw std::runtime_error("progress_callback_failed");
+                last_progress = Clock::now();
+            }
             batch.n_tokens = 1; batch.token[0] = t; batch.pos[0] = pos++;
             batch.n_seq_id[0] = 1; batch.seq_id[0][0] = 0; batch.logits[0] = true;
             decode(m, batch, call);
@@ -192,9 +214,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
         const auto clear_start = Clock::now();
         llama_memory_clear(llama_get_memory(m->ctx), true);
         m->clear_ms = std::chrono::duration<double, std::milli>(Clock::now() - clear_start).count();
-        auto result = env->NewByteArray(static_cast<jsize>(output.size()));
-        if (result) env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()), reinterpret_cast<const jbyte *>(output.data()));
-        return result;
+        return output_bytes(env, output);
     } catch (const std::exception & e) {
         // Retain the call token and context until all submitted work has returned.
         llama_set_abort_callback(m->ctx, nullptr, nullptr);

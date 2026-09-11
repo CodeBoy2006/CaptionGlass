@@ -45,7 +45,6 @@
     <string name="notice_start_rejected">请回到应用前台重新开启</string>
     <string name="action_open_settings">去设置</string>
 
-    <string name="signal_reading_behind">%1$d 条未及显示</string>
     <string name="signal_backlog">%1$d 条未翻译</string>
     <string name="signal_overlay_off">悬浮窗未开启</string>
 
@@ -69,7 +68,7 @@
     <string name="overlay_allowed">已允许</string>
     <string name="overlay_denied">未允许</string>
     <string name="overlay_pass_through">穿透</string>
-    <string name="overlay_blocking">拦截</string>
+    <string name="overlay_blocking">滚动</string>
     <string name="overlay_gesture">轻点把手切换 · 拖动把手移动</string>
     <string name="settings_privacy">隐私</string>
     <string name="privacy_network">本地推理</string>
@@ -78,8 +77,7 @@
     <string name="privacy_screen">不截画面</string>
     <string name="version">版本 %1$s</string>
 
-    <string name="overlay_handle">字幕把手，拖动移动，轻点切换触摸穿透</string>
-    <string name="overlay_pending" translatable="false">• • •</string>
+    <string name="overlay_handle">字幕把手，拖动移动，轻点切换滚动与触摸穿透</string>
 
     <string name="notification_channel">实时字幕</string>
     <string name="notification_title">字幕运行中</string>
@@ -130,10 +128,7 @@
     <string name="model_segmented">分段识别</string>
     <string name="model_streaming">流式识别</string>
     <string name="model_pair_mismatch">不支持当前语言方向</string>
-    <string name="model_segmented_hint">停顿后识别；连续语音超过 14 秒会停止，请改用流式模型。</string>
     <string name="model_community">社区转换版本</string>
-    <string name="status_asr_limit">长句超出模型上限</string>
-    <string name="hint_asr_limit">换用流式识别模型后重试。</string>
     <string name="model_keep_open">下载期间请保持应用开启</string>
     <string name="model_zipformer_quality">实测有漏句，暂不建议用于连续字幕。</string>
 </resources>

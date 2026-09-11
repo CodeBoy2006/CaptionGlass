@@ -2,9 +2,9 @@
 
 ## 1. 三种不同的时间尺度
 
-识别假设可以修订，翻译需要完整语义，阅读需要稳定停留。`SourceGate` 分开管理原文稳定与语义提交，`TranslationQueue` 管理串行推理，`CaptionScheduler` 管理阅读。翻译 token 不直接驱动字幕。
+识别假设可以修订，翻译需要完整语义，阅读需要稳定停留。`SourceGate` 分开管理原文稳定与语义提交，`TranslationQueue` 管理串行推理，`CaptionFeed` 保留按序的双语片段。译文通过节流的增量回调更新对应片段，正常结束后才成为已完成译文。
 
-推理积压与阅读积压分别计数。前者给出明确未翻译结果；后者保留完整记录并提示回看，不摘要、不删除已确认文本。
+推理积压给出明确未翻译结果；阅读不再使用有时限的队列。最近 200 个片段可滚动查看，不用摘要或自动清空来追赶播放。
 
 ## 2. 三个模块
 
@@ -18,7 +18,7 @@ flowchart LR
 | 模块 | M1 实现 |
 | --- | --- |
 | `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、离线语言包导入 |
-| `engine` | 原文稳定/提交/修订、单工作器队列、分页阅读调度、确定性回归检查 |
+| `engine` | 原文稳定/提交/修订、单工作器队列、有界双语记录、确定性回归检查 |
 | `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp Vulkan C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
 `engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。M0 固定文本预览已移除。
@@ -38,8 +38,10 @@ flowchart TD
     queue --> outcome[未翻译原因]
     mt --> outcome
     outcome --> history[内存最近 200 条 + 完整性计数]
-    outcome --> scheduler[CaptionScheduler / 4 等待 + 1 当前]
-    scheduler --> overlay[双语原生悬浮字幕]
+    mt --> preview[按片段身份更新增量译文]
+    preview --> feed[CaptionFeed / 最近 200 个片段]
+    outcome --> feed
+    feed --> overlay[可滚动双语原生悬浮字幕]
 ```
 
 ### 3.1 生命周期与取消
@@ -48,7 +50,7 @@ flowchart TD
 
 `CaptionSession` 的可变状态全部由 Main owner 修改。PCM 通过有界 Channel 进入；ASR 与 MT 各自只有一个专用线程。native 构造、调用、析构均在其所属线程上执行。UI 不持有 native 句柄。
 
-停止顺序：关闭输入、停止 AudioRecord 以解除阻塞、给所有未完成确认片段发出 `STOPPED`、置 native 原子取消标记、停止发布阅读页、处理已接受的 ASR 尾部、等待工作器返回、释放模型/线程/悬浮窗/projection、结束前台服务。回收完成前仍保持 busy，禁止开始第二个会话。系统撤销授权使用同一路径。读协程负责唯一一次 AudioRecord release。服务与会话以 `CaptureStatus` 发布准备、等待声音、聆听、未收到声音与各停止原因；界面将其映射为符号与短标签，不解析异常文本。
+停止顺序：关闭输入、停止 AudioRecord 以解除阻塞、给所有未完成确认片段发出 `STOPPED`、置 native 原子取消标记、停止接受迟到译文增量并保留已显示条目、处理已接受的 ASR 尾部、等待工作器返回、释放模型/线程/悬浮窗/projection、结束前台服务。回收完成前仍保持 busy，禁止开始第二个会话。系统撤销授权使用同一路径。读协程负责唯一一次 AudioRecord release。服务与会话以 `CaptureStatus` 发布准备、等待声音、聆听、未收到声音与各停止原因；界面将其映射为符号与短标签，不解析异常文本。
 
 Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子取消标志与 steady-clock deadline。CPU abort callback 仅覆盖 CPU 算子；Vulkan 预填充每批最多 8 tokens，每批／生成 token 前后检查取消，并等待已提交 GPU 工作同步后返回。小批次使用上游 Vulkan 的向量计算路径，降低手机短提示的预填充开销。GPU 在途工作不可抢占，这限制了每次等待的工作量，不保证挂起驱动下的硬实时截止时间。调用返回并卸下 callback 后才释放 token。清理失败使该 context 不再接受翻译；固定运行库的仓库补丁防止析构中的 Vulkan 同步异常穿过 noexcept 析构函数。超时/撤回后，队列保留 active 槽直到匹配的 completion 到达，因此不会启动孤儿翻译或并行访问 context。ASR 库没有中途终止构造/解码 API，停止需要等待正在执行的调用返回。
 
@@ -58,7 +60,7 @@ Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子�
 
 sherpa 内部有状态 `LinearResample` 将 48 kHz 输入转换到 16 kHz 特征率。会话内不切换输入率。真实采集按读取帧数计算样本时间；队列等待用 `SystemClock.elapsedRealtime()`。测试回放按样本数与同一单调时钟以 1× 速度供给。片段 `endMs` 是语义确认时已处理的样本位置，并非人工标注的发音结束位置，更不是源视频时间轴。当前不做硬件时钟漂移校准，长时漂移验收属于 M2。
 
-流式 ASR 在实际 EOF/停止时才追加 960 ms 零样本并 `inputFinished()`，用于冲刷模型尾部；正常采集不注入静音。声学 endpoint 后提取最终残段，再使用对应 sherpa 实现的 stream reset：Zipformer 保留其声学上下文，NeMo 会重建编码器／解码器缓存，流的语言选项保留。下游语义提交从不 reset ASR。
+流式 ASR 在实际 EOF/停止时才追加 960 ms 零样本并 `inputFinished()`，用于冲刷模型尾部；正常采集不注入静音。声学 endpoint 后提取最终残段，再使用对应 sherpa 实现的 stream reset：Zipformer 保留其声学上下文，NeMo 会重建编码器／解码器缓存，流的语言选项保留。下游语义提交从不 reset ASR。显式覆盖上游默认 20 秒时长端点，只有停顿触发 reset；长流式假设通过带绝对字符偏移的近期文本窗口交给语义层。
 
 ### 3.3 身份、语义与修订
 
@@ -68,23 +70,23 @@ sherpa 内部有状态 `LinearResample` 将 48 kHz 输入转换到 16 kHz 特征
 
 只补上的句号等纯标点尾部不构成新的翻译任务；它仍被 gate 消费，避免重复提交。native 接口也拒绝没有文字或数字的片段，防止把历史上下文误当成待翻译内容。
 
-当已提交前缀被 ASR 推翻时，立即撤回本 utterance 对应的显示/待译内容，取消其 active MT，将历史标记为 `SUPERSEDED`，清除失效上下文。在声学 endpoint 只提交一次完整修正，避免连续修订反复重译。原文超过 8,192 字符会明确报错停止，不能静默截断。
+当已提交前缀被 ASR 推翻时，立即撤回仍在可修订窗口内的显示/待译内容，取消其 active MT，将历史标记为 `SUPERSEDED`，清除失效上下文。修正后的完整句在后续新音频假设中稳定后即可提交，不必一直等声学 endpoint。已提交且完整退出识别窗口的片段从 gate 状态及可撤回键集合中移出；不在片段中部退役，撤回后尚未重新提交的修正文也不得退役，保留未闭合的语义尾部；累计会话字符数不作为停机条件。单个翻译片段仍受 8,192 字符的数据边界约束。
 
 ### 3.4 队列、上下文与完整性
 
-MT 默认 3 个等待槽和 1 个 active，确认后最多等待 8 秒。上下文最多 4 个已确认原文片段、512 字符；native tokenizer 再限制历史最多 256 tokens，总输入加输出不超过 2,048 tokens。整段译文最多 256 输出 tokens，未遇 EOG 就用尽预算属于失败，不显示截断译文。
+MT 默认 3 个等待槽和 1 个 active，确认后最多等待 8 秒。请求单独记录提交时的会话单调时间；队列过期、完成验收与 native deadline 使用同一起点，音频样本结束时间只用于字幕记录，识别耗时不挤占新请求的翻译预算。上下文最多 4 个已确认原文片段、512 字符；native tokenizer 再限制历史最多 256 tokens，总输入加输出不超过 2,048 tokens。整段译文最多 256 输出 tokens，未遇 EOG 就用尽预算属于失败，不显示截断译文。
 
-同一个 MT 协程在完成后直接处理下一条未过期任务，不再等待 80 ms 的显示轮询。译文完成时立即交给阅读调度；已有页面仍遵守最短停留。native 在成功或异常返回前统一清零 KV，不在下一次入口重复清零；没有跨请求缓存复用。
+同一个 MT 协程在完成后直接处理下一条未过期任务。JNI 在原有 MT worker 上每约 120 ms 回调累计 UTF-8；不完整字符和 Murasaki 思考标签不发布。Main owner 按完整 SegmentKey、active call 与终态检查更新预览；取消、超时、修订后的迟到增量被忽略。失败后的已有预览保留但标为未完成，不能当作成功译文。译文完成时原位更新对应行。native 在成功或异常返回前统一清零 KV，不在下一次入口重复清零；没有跨请求缓存复用。
 
-终态为译文或 `BACKLOG / FAILED / TIMED_OUT / STOPPED / SUPERSEDED`。溢出、超时、停止返回值均被消费，确认计数与终态计数可核对。BACKLOG 立即进记录并更新单独提示，不把较晚的拒绝片段插到较早的在途译文之前。内存记录按 sequence 排序，只保留最近 200 条；计数覆盖整个会话。持久记录属于 M2。
+终态为译文或 `BACKLOG / FAILED / TIMED_OUT / STOPPED / SUPERSEDED`。溢出、超时、停止返回值均被消费，确认计数与终态计数可核对。所有状态在提交时建立的原位置更新，不因完成顺序改变片段顺序。内存记录按 sequence 排序，只保留最近 200 条；计数覆盖整个会话。持久记录属于 M2。
 
 ### 3.5 阅读与悬浮窗
 
-Android `StaticLayout` 按实际字号测量每种语言最多两行的页面，阅读调度每页停留 1.6–6 秒。各侧阅读时间分别估算：汉字、平假名、片假名和韩文每码点 100 ms，其他码点 50 ms；取原文和译文较长的一侧，不把两侧时间相加。这是待阅读测试校准的启发式，不代表每位用户都能以此速度读完。完整文本保留在记录，长译文分多页，不用省略号代替后半句。队列满或迟到结果更新阅读积压提示；显示序号不会倒退。字体/显示配置改变后重新测量待显示内容。
+`CaptionFeed` 在原文提交时创建稳定身份的行，增量译文和最终结果更新同一行；没有阅读倒计时、两行分页或阅读溢出。`CaptionTranscriptView` 是首页与悬浮框共用的原生 ScrollView，以现有 View 原位更新文本。每组译文在上、原文在下；进行中的对应片段使用浅绿灰，完成后译文为白色、原文为次级灰。颜色表示片段状态，不伪造逐字翻译对齐。
 
-悬浮层有两个原生 Window：正文卡片默认 `FLAG_NOT_TOUCHABLE`，其上方居中的 48 dp 把手支持拖动（靠近水平中心时吸附）与轻点切换。穿透时正文窗口 alpha 不超过系统允许的触摸遮挡阈值；Android 12+ 仅设背景透明度不足以允许穿透。拦截模式下卡片可触摸、不透明并以绿色描边标识，轻点卡片或把手回到穿透。尚无文字时卡片收缩为图标加短词的状态胶囊；未稳定的临时原文以较暗颜色显示，译文位置用脉动圆点占位；长字幕的分页以卡片底部细分段条表示。[WindowManager 触摸规则](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_NOT_TOUCHABLE)
+手动回滚时记录可见行及行内偏移；后续增量或新片段保持该阅读位置，回到底部恢复跟随。字体变化重新布局，文本不丢失。当前保留最近 200 个片段；停止不清空应用内已显示内容，新会话建立新的记录。
 
-横竖屏分别保存位置，依据 WindowMetrics、系统栏与刘海安全区约束范围。两方向使用保守的窄边宽度；字体缩放按系统 sp。只使用 `SYSTEM_ALERT_WINDOW`，不用无障碍绕过权限。拒绝悬浮窗时仍能在应用内部查看字幕。
+悬浮层仍只有两个 Window：正文与 48 dp 把手。正文默认不透明且可滚动；把手拖动移动，轻点切换穿透并保存选择。穿透时使用 `FLAG_NOT_TOUCHABLE`，窗口 alpha 不超过 Android 的安全上限；穿透卡片无法同时接收滚动手势。只有把手处理拖动，不抢走正文滚动。无内容时是紧凑状态条，有内容后不因静音或定时器折叠。横竖屏分别保存位置，依据 WindowMetrics、系统栏与刘海约束；仅使用 SYSTEM_ALERT_WINDOW。[Android 触摸遮挡规则](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_NOT_TOUCHABLE)
 
 ## 4. 固定模型与运行库
 
@@ -126,10 +128,12 @@ ModelPack 在 Main 入口同步占用唯一操作槽，以进程级协程执行 
 
 Qwen3-ASR 和 Parakeet 复用固定 sherpa OfflineRecognizer；Japanese Zipformer Base 是 raw-waveform CTC，使用随 APK 打包的 LiteRT 2.2.0 Interpreter CPU 单线程。不是旧版 ReazonSpeech transducer 的别名。Qwen 使用英文语言全名，tokenizer 文件从模型目录读取；Parakeet TDT、日语 CTC 各使用正确配置。
 
-一个 ASR worker 同步执行 VAD 与识别。512 样本一帧，Silero 概率仅用于寻找约 1.2 秒停顿，不丢弃非零音频；精确全零帧无需推理。缓冲最多 14 秒；超过上限仍无完整停顿时明确停止并提示切换流式模型，不能将人为截断的句尾标为 final。48 kHz 通过同一固定 sherpa LinearResample 源码的薄 JNI 包装连续重采样，停止冲刷余量。结束只识别尚未提交的尾部，不重新提交已完成窗口。Japanese Zipformer 按官方导出约定追加两侧各 0.5 秒模型内部 padding、生成四级 attention mask，并按 blank=0 的 CTC 合并规则解码。
+一个 ASR worker 同步执行 VAD 与识别。512 样本一帧，Silero 概率仅用于寻找约 1.2 秒停顿，不丢弃非零音频；精确全零窗口无需推理。首个约 4 秒窗口提供可修订原文，最长约 8 秒后保留 2 秒重叠音频继续处理。窗口时限不代表句子结束；只有停顿或实际 EOF 标为 final。48 kHz 使用同一固定 sherpa LinearResample 的有状态 JNI 包装，停止冲刷余量。没有新增音频时使用最后一次结果确认尾部，不再单独识别或重复提交重叠区。Japanese Zipformer 保留导出约定的两侧各 0.5 秒 padding、四级 attention mask 与 blank=0 CTC 解码。
 
-分段模型没有临时原文；长停顿依赖、短句质量、VAD 错判和 CPU 推理积压均需单独评价，不宣称等同于真正流式识别。它们沿用现有有界 PCM 通道和显式 overrun/识别失败路径，不丢帧、不切云端。
+`WindowTranscript` 只保留一个识别窗口，以新窗口开头的连续词／字锚点约束旧窗口后缀对齐，允许旧窗口右缘被后文修订。字符偏移区分已退出声学窗口的前缀与当前可修订区；`SourceGate` 仍负责两次新音频假设的一致性及语义提交。Parakeet 的真实 token 时间戳约束候选接缝；无法找到词锚点时按真实发射时间确定旧文边界。Qwen 的固定导出没有 token 时间戳，仅在相近置信度的重复锚点之间用已知重叠时长比例消歧，不把它当作词时间戳。没有时间戳且对齐失败时保留旧文；重复短语及识别差异仍可能造成重复，不能宣称完全无损的文本拼接。此处借鉴 [Whisper-Streaming 的局部一致性思路](https://github.com/ufal/whisper_streaming)，未引入其运行库或额外模型。
+
+分段预览、接缝识别、VAD 错判与 CPU 推理积压仍需分别评价，不宣称等同真正流式 ASR。真正的采集失败、内存分配失败和处理速度长期不足沿既有故障路径处理；不丢帧、不切云端，不用提示文案替代正常接续。
 
 ## 5. 后续工作
 
-暂停/回看、Room 与文字保留选择、TXT/SRT/VTT、相关术语、完整安装管理、30–60 分钟热稳态、多设备画像尚未实现。已知 ASR 错词与延迟目标差距必须保留在验收记录。日语等新语种的持续性能、STQ 或加速后端均须独立验证，不能把短样本吞吐当作持续体验达标。详见 [验收计划](validation.md)。
+暂停、Room 与文字保留选择、TXT/SRT/VTT、相关术语、跨进程下载恢复、30–60 分钟热稳态、多设备画像尚未实现。已知 ASR 错词与延迟目标差距必须保留在验收记录。日语等新语种的持续性能、STQ 或加速后端均须独立验证，不能把短样本吞吐当作持续体验达标。详见 [验收计划](validation.md)。

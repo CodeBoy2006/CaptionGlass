@@ -94,7 +94,7 @@ private fun Header() {
 private fun Signals(capture: CaptureState, pack: PackState, overlayAllowed: Boolean,
                     onOpenRecords: () -> Unit, onOverlaySettings: () -> Unit) {
     var dismissed by remember(capture.status, capture.active) { mutableStateOf(false) }
-    val chips = !overlayAllowed || capture.readingBehind > 0 || capture.translationBacklog > 0
+    val chips = !overlayAllowed || capture.translationBacklog > 0
     Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         AnimatedVisibility(!capture.active && capture.status.isProblem && !dismissed) {
             Notice(capture.status.icon, stringResource(capture.status.label), capture.status.hint?.let { stringResource(it) }) { dismissed = true }
@@ -103,8 +103,6 @@ private fun Signals(capture: CaptureState, pack: PackState, overlayAllowed: Bool
         if (chips) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!overlayAllowed) SignalChip(R.drawable.ic_picture_in_picture, stringResource(R.string.signal_overlay_off),
                 MaterialTheme.colorScheme.tertiary, onOverlaySettings)
-            if (capture.readingBehind > 0) SignalChip(R.drawable.ic_fast_forward,
-                stringResource(R.string.signal_reading_behind, capture.readingBehind), MaterialTheme.colorScheme.primary, onOpenRecords)
             if (capture.translationBacklog > 0) SignalChip(R.drawable.ic_speed,
                 stringResource(R.string.signal_backlog, capture.translationBacklog), MaterialTheme.colorScheme.tertiary, onOpenRecords)
         }

@@ -145,7 +145,6 @@ internal fun ModelManager(pack: PackState, catalog: ModelCatalog, selection: Mod
                 if (model.kind == "mt") Text(model.sourceLanguages.joinToString(" · ") { it.chineseName } + " →\n" +
                     model.languages.joinToString(" · ") { it.chineseName })
                 else Text(model.languages.joinToString(" · ") { it.chineseName })
-                if (model.segmented) Text(stringResource(R.string.model_segmented_hint), style = MaterialTheme.typography.bodySmall)
                 if (model.adapter == "japanese-zipformer") Text(stringResource(R.string.model_zipformer_quality), style = MaterialTheme.typography.bodySmall, color = colors.tertiary)
                 Text(model.unavailableReason ?: stringResource(R.string.experimental_languages), style = MaterialTheme.typography.bodySmall)
                 if (model.installable) {

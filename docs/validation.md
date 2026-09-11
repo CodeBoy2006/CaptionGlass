@@ -9,7 +9,7 @@ bash scripts/prepare-native.sh
 ./gradlew :engine:check :app:assembleDebug :app:lintDebug
 ```
 
-使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1；先设置 `JAVA_HOME` 和 `ANDROID_HOME`。宿主需要 Clang 与 Python 3，准备脚本编译固定的 shaderc 工具及 matched DEPS，以生成 Vulkan shader。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽、1,000 个确认片段完整性、阅读停留/分页/重排与字体重测；本次增加语言代码／交换约束、日语句尾否定等待、日语标点残段和假名／韩文阅读停留。
+使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1；先设置 `JAVA_HOME` 和 `ANDROID_HOME`。宿主需要 Clang 与 Python 3，准备脚本编译固定的 shaderc 工具及 matched DEPS，以生成 Vulkan shader。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽及 1,000 个确认片段完整性。连续窗口检查覆盖样本完整、重复语句接缝、500 窗口状态退役与跨窗口修正；阅读检查覆盖流式结果身份、终态、撤回和未完成预览保留。原生滚动和字体重排在设备上检查。
 
 CI 获取哈希固定的 native 依赖后运行上述检查。CI 不下载模型，不声称执行了真机推理。M0 的固定文本预览已删除。
 
@@ -24,7 +24,7 @@ bash scripts/device-check.sh <明确选择且解锁的测试设备序列号>
 
 系统合成语音使用 macOS Daniel / Tingting / Kyoko，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
 
-检查内容：模型目录与语言兼容规则、独立文件路径、四项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；Nemotron 与原有模型的英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词；分页拼接不丢字。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
+检查内容：模型目录与语言兼容规则、独立文件路径、四项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；UTF-8 增量回调、派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；Nemotron 与原有模型的英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。阅读和长语音可独立运行 `mode reading`、`mode continuity`，命令见 README。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
 
 模型管理可单独执行 `mode models`，使用独立小文件目录覆盖安装、取消、校验失效、恢复和删除；`mode model-network` 再增加实际 HTTPS 下载与 HTTP 错误检查，命令见 README，不需要部署推理权重。
 
@@ -43,8 +43,8 @@ vivo 的后台冻结可能在 Instrumentation 首个 Activity 启动前暂停进
 2. 拒绝一次录音权限，取消一次 MediaProjection，确认应用不崩溃且可以重新发起。
 3. 允许悬浮窗，选择英语到中文，开启字幕；系统授权选择整个屏幕。
 4. 启动独立测试 APK 的 `com.captionglass.app.FixturePlayer`，点击播放。它有独立 UID，明确允许播放捕获，只播放生成的 WAV。
-5. 观察真实原文、整段译文、两行分页。拖动把手；在穿透模式点击正文下的播放器，播放器点击计数应增加；切到交互模式后点击正文只切回穿透。
-6. 检查横竖屏、字体放大、安全区和长字幕；同一页面正文每种语言不超过两行，文字记录保留完整内容。
+5. 观察真实原文、增量译文和完成后的保留。拖动把手；在穿透模式点击正文下的播放器，播放器点击计数应增加；切到滚动模式后可在正文回看，新内容不应把阅读位置拉走。
+6. 检查横竖屏、字体放大、安全区和长字幕；正文应可滚动到全部保留内容，回到底部恢复跟随，静音不清空字幕。
 7. 通过通知或应用停止，确认读取结束、overlay/projection/前台通知退出，重新授权可开始；系统撤销 consent 也必须收敛到停止状态。
 8. 切换中文到英语重复播放。静音与限制捕获只能反馈观测事实，不推断 DRM。
 
@@ -255,9 +255,27 @@ Nemotron 与 MT 加载后 PSS 抽样为 2,316,481–2,521,592 KB，并非峰值�
 
 证据在 ignored `artifacts/model-manager-final-build.log`、`model-manager-phone-all.log`、`model-manager-network.log`、`nemotron-onnx-metadata.json` 与 `model-manager-ui/`。固定来源、许可和哈希见 `models/catalog.json` 与 `third_party/NOTICE.md`。
 
+### 2.10 连续窗口与流式阅读
+
+2026-09-12，vivo V2415A / API 36，实际 CPU ASR 与 Vulkan MT，使用已有 macOS 合成语音。固定时间分页已删除，以下检查针对当前的滚动记录；上文旧版分页数据仅作为历史记录。
+
+| 检查 | 结果 |
+| --- | --- |
+| JDK 17 构建 | `--no-watch-fs :engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` 通过 |
+| 实际 MT 流式回调 | Hy-MT2 在正常结束前产生 3 次有效 UTF-8 预览；多语目标、流式中取消、超时和取消后复用通过 |
+| 阅读 | 4 个真实翻译片段静置 30 秒仍保留；触摸回滚和无障碍后滚保持位置，回到底部恢复跟随 |
+| 界面 | 默认不透明、可滚动；竖屏和横屏 130% 字号检查通过；字体与自动旋转设置已恢复 |
+| Qwen 0.6B + StreamRevise | 27.76 秒连续英语的四次重复锚点全部保留，正常结束 5/5、24 秒停止 4/4 个确认／终态；首个原文／增量译文约 6.08/12.46 秒 |
+| Parakeet 日语 + MiLMMT 1B | 33.53 秒连续日语的四次重复锚点全部保留，正常结束和 24 秒停止均为 1/1；首个原文／增量译文约 4.45/37.10 秒 |
+| X-ASR + Hy-MT2 | 27.76 秒连续英语、正常结束和 24 秒停止均为 8/8；首个原文／增量译文约 1.39/5.93 秒 |
+
+以上计数验证接续和结果处理，不代表逐字正确或完整翻译。Qwen 存在窗口右缘改写、重复与错词；Parakeet 日语仍有局部漏词且缺少标点，语义层要等停顿才能提交，因此译文等待明显偏长。MiLMMT 在重复长段上压缩了部分重复译文。当前未增加逐假设重译或针对样本文本的切句规则，也未以强制切断句末谓语、否定来降低延迟。Japanese Zipformer 的既有漏句和其他未实测型号限制见 [模型支持表](model-support.md)。
+
+日志为 ignored `artifacts/reading-native-final.log`、`reading-reading-accepted.log`、`reading-qwen-accepted.log`、`reading-parakeet-accepted.log`、`reading-streaming-accepted.log`；截图在 `artifacts/reading-ui/`。这轮覆盖真实推理的功能和阅读状态，不包含自然语音质量、30–60 分钟热稳态或跨应用持续播放质量验收。
+
 ## 3. M2：可持续体验
 
-实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，回看，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
+实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
 
 使用有授权的同一批样本，覆盖讲课、技术专名、中英混说、快语速、口音、背景音乐、数字和否定。至少一台主流骁龙中端、一台天玑中端和一台旗舰，同时播放视频，运行 30–60 分钟。
 
@@ -269,7 +287,7 @@ Nemotron 与 MT 加载后 PSS 抽样为 2,316,481–2,521,592 KB，并非峰值�
 | MT 吞吐余量 | 平均 MT 耗时 / 平均片段到达间隔 | ≤0.6 |
 | 持续积压 | 队列长度、最老年龄、热稳态趋势 | 不持续增长 |
 | 完整性 | confirmed / translated / 各未翻译原因 | 每条可核对 |
-| 阅读稳定 | 修订、停留、重排、阅读积压 | 人工检查与计数 |
+| 阅读稳定 | 修订、滚动锚点、字号重排、回到底部跟随 | 人工检查与计数 |
 | 资源 | 峰值 PSS、热状态、电量、冷/热启动 | 8 GB 机 PSS 初始预算 2.5–3 GB |
 
 这些数字是目标，不是已达标声明。原始音频默认不保存；质量数据集需明确授权并放在 Git 外，生产诊断不记录识别文本。

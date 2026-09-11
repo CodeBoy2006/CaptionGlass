@@ -5,7 +5,6 @@ import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.content.res.Configuration
 import android.graphics.drawable.Icon
 import android.media.*
 import android.media.projection.MediaProjection
@@ -62,7 +61,7 @@ class PlaybackCaptureService : Service() {
             overlay = view
             view.render(mutableState.value)
             if (Settings.canDrawOverlays(this)) view.show()
-            val pipeline = CaptionSession(scope, selection, view::pages) {
+            val pipeline = CaptionSession(scope, selection) {
                 mutableState.value = it
                 view.render(it)
             }
@@ -194,10 +193,6 @@ class PlaybackCaptureService : Service() {
             .setCategory(Notification.CATEGORY_SERVICE).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_stop),
                 getString(R.string.action_stop), stop).build()).build()
-    }
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        overlay?.configurationChanged(); session?.reflow()
     }
     override fun onDestroy() {
         requestStop()

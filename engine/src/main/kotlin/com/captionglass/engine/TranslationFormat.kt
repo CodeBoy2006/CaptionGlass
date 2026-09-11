@@ -42,6 +42,16 @@ enum class TranslationFormat(val id: String) {
         return result
     }
 
+    fun preview(text: String): String {
+        var result = text.trimStart()
+        if ("<think>".startsWith(result)) return ""
+        if (result.startsWith("<think>")) {
+            if (this != MURASAKI || "</think>" !in result) return ""
+            result = result.substringAfter("</think>").trimStart()
+        }
+        return result.substringBefore("<think>").substringBefore("</think>").trimEnd()
+    }
+
     companion object {
         private const val HY_PREFIX = "<｜hy_begin▁of▁sentence｜><｜hy_User｜>"
         private const val HY_SUFFIX = "<｜hy_Assistant｜>"

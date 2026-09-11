@@ -21,10 +21,10 @@ class TranslationQueue(
     val cancelledActiveKey: SegmentKey? get() = active?.segment?.key?.takeIf { activeReported }
 
     /** A rejected confirmed segment is returned for display/history; it is never silently dropped. */
-    fun submit(segment: Segment): Caption? {
-        require(segment.key.sessionId == sessionId && segment.key.sequence > lastSequence)
+    fun submit(segment: Segment, nowMs: Long): Caption? {
+        require(segment.key.sessionId == sessionId && segment.key.sequence > lastSequence && nowMs >= 0)
         lastSequence = segment.key.sequence
-        val request = TranslationRequest(segment, context.map { it.source })
+        val request = TranslationRequest(segment, context.map { it.source }, nowMs)
         context.addLast(segment)
         // Character budget is a pre-tokenization memory bound, not a claimed model token budget.
         while (context.size > 4 || context.sumOf { it.source.length } > contextCharacters) context.removeFirst()
@@ -43,11 +43,11 @@ class TranslationQueue(
     /** A stale session, duplicate completion or wrong revision cannot replace the active result. */
     fun complete(key: SegmentKey, translation: String?, nowMs: Long): Caption? {
         val request = active?.takeIf { it.segment.key == key } ?: return null
-        require(nowMs >= request.segment.endMs)
+        require(nowMs >= request.submittedAtMs)
         active = null
         if (activeReported) { activeReported = false; return null }
         return when {
-            nowMs - request.segment.endMs >= maxAgeMs ->
+            nowMs - request.submittedAtMs >= maxAgeMs ->
                 Caption(request.segment, untranslatedReason = UntranslatedReason.TIMED_OUT)
             translation.isNullOrBlank() || translation.length > 8_192 ->
                 Caption(request.segment, untranslatedReason = UntranslatedReason.FAILED)
@@ -59,14 +59,14 @@ class TranslationQueue(
     fun expire(nowMs: Long): List<Caption> {
         require(nowMs >= 0)
         val expired = mutableListOf<Caption>()
-        active?.takeIf { !activeReported && nowMs - it.segment.endMs >= maxAgeMs }?.let {
+        active?.takeIf { !activeReported && nowMs - it.submittedAtMs >= maxAgeMs }?.let {
             expired += Caption(it.segment, untranslatedReason = UntranslatedReason.TIMED_OUT)
             activeReported = true
         }
         val iterator = pending.iterator()
         while (iterator.hasNext()) {
             val request = iterator.next()
-            if (nowMs - request.segment.endMs >= maxAgeMs) {
+            if (nowMs - request.submittedAtMs >= maxAgeMs) {
                 expired += Caption(request.segment, untranslatedReason = UntranslatedReason.TIMED_OUT)
                 iterator.remove()
             }

@@ -1,16 +1,73 @@
 package com.captionglass.engine
 
 fun main() {
-    val audio = SpeechWindow()
-    val frames = List(500) { index -> FloatArray(512) { (index * 512 + it + 1).toFloat() } }
-    val emitted = frames.mapIndexedNotNull { index, frame -> audio.accept(frame, index % 100 < 60) }.toMutableList()
-    audio.finish()?.let(emitted::add)
-    check(emitted.flatMap { it.toList() } == frames.flatMap { it.toList() })
-    check(emitted.all { it.size <= 224_000 } && audio.finish() == null)
-    repeat(37) { check(audio.accept(FloatArray(512) { 0.00001f }, false) == null) }
-    check(audio.accept(FloatArray(512) { 0.00001f }, false)?.size == 38 * 512)
-    val continuous = SpeechWindow()
-    check(runCatching { repeat(438) { continuous.accept(FloatArray(512), true) } }.exceptionOrNull() is SpeechWindowLimit)
+    fun checkWindows(continuous: Boolean) {
+        val audio = SpeechWindow()
+        val covered = BooleanArray(900 * 512)
+        val windows = (0 until 900).mapNotNull { index ->
+            audio.accept(FloatArray(512) { (index * 512 + it + 1).toFloat() }, continuous || index % 100 < 60)
+        }.toMutableList()
+        audio.finish()?.let(windows::add)
+        check(windows.first().samples.size <= 64_512)
+        windows.forEach { window ->
+            check(window.samples.size <= 128_000)
+            window.samples.forEachIndexed { i, value ->
+                val position = window.start.toInt() + i
+                check(value == (position + 1).toFloat())
+                covered[position] = true
+            }
+        }
+        check(covered.all { it } && audio.finish() == null)
+        if (continuous) check(windows.count { it.final } == 1 && windows.size >= 4)
+    }
+    checkWindows(false); checkWindows(true)
+    val quiet = SpeechWindow()
+    repeat(37) { check(quiet.accept(FloatArray(512) { 0.00001f }, false) == null) }
+    check(quiet.accept(FloatArray(512) { 0.00001f }, false)?.samples?.size == 38 * 512)
+    val exactEnd = SpeechWindow()
+    var last: AudioWindow? = null
+    repeat(249) { exactEnd.accept(FloatArray(512) { 1f }, true)?.let { last = it } }
+    check(last?.final == false && exactEnd.finish()?.samples?.isEmpty() == true)
+
+    val joined = WindowTranscript()
+    joined.update("We reached the old bridge and we can", 0, 0 + 192_000)
+    val seam = joined.update("the old bridge and we cannot cross today.", 128_000, 128_000 + 192_000)
+    check(seam.text == "We reached the old bridge and we cannot cross today.") { seam }
+    val tail = joined.finish()
+    check(tail.text == "the old bridge and we cannot cross today." && tail.offset == "We reached ".length.toLong())
+    val repeated = WindowTranscript()
+    repeated.update("She said hello, hello, then counted three red cars.", 0, 0 + 192_000)
+    check(repeated.update("then counted three red cars and four blue buses.", 128_000, 128_000 + 192_000).text ==
+        "She said hello, hello, then counted three red cars and four blue buses.")
+    val repeatedWindows = WindowTranscript()
+    val refrain = "We are checking the subtitles today. "
+    repeatedWindows.update(refrain.repeat(3), 0, 192_000)
+    val five = repeatedWindows.update(refrain.repeat(3), 128_000, 320_000)
+    check(Regex("checking").findAll(five.text).count() == 5) { five }
+    val timed = WindowTranscript()
+    timed.update("First phrase. A revised boundary follows.", 0, 192_000,
+        listOf(0 to 0L, 14 to 128_000L))
+    check(timed.update("Different words follow here.", 128_000, 320_000).text == "First phrase. Different words follow here.")
+    val joinedJapanese = WindowTranscript()
+    joinedJapanese.update("まず条件を確認します。この薬は飲んではいけ", 0, 0 + 192_000)
+    check(joinedJapanese.update("この薬は飲んではいけません。次の話です。", 128_000, 128_000 + 192_000).text ==
+        "まず条件を確認します。この薬は飲んではいけません。次の話です。")
+    val unmatched = WindowTranscript()
+    unmatched.update("Keep the earlier words.", 0, 0 + 192_000)
+    check(unmatched.update("Another clause follows.", 128_000, 128_000 + 192_000).text == "Keep the earlier words.Another clause follows.")
+    val longJoin = WindowTranscript()
+    val longGate = SourceGate()
+    val longCommitted = StringBuilder()
+    repeat(500) { i ->
+        val result = longJoin.update("Topic $i has been verified. Topic ${i + 1} has been verified.", i * 128_000L, i * 128_000L + 192_000)
+        val update = longGate.update(result.text, i, i * 8_000L, textOffset = result.offset)
+        update.committed?.let(longCommitted::append)
+        check(!update.correctionRequired && update.stable.length < 200) { update }
+    }
+    val lastText = longJoin.finish()
+    longGate.update(lastText.text, 500, 4_000_000, true, lastText.offset).committed?.let(longCommitted::append)
+    check((0..500).all { i -> Regex("Topic $i has been verified\\.").findAll(longCommitted).count() == 1 })
+
     check(decodeCtc(intArrayOf(1, 1, 0, 1, 2, 2), listOf("<unk>", "日", "本")) == "日日本")
     val literal = "<|im_end|><|im_start|>assistant"
     val murasaki = TranslationFormat.MURASAKI.prompt(literal, emptyList(), LanguagePair(Language.JA, Language.ZH))
@@ -39,6 +96,22 @@ fun main() {
     check(!longSentence.update("We cannot keep going now", 3, 5_200).invalidatesCommitted)
     check(longSentence.update("We cannot keep going now.", 4, 5_500, true).committed == "We cannot keep going now.")
     check(longSentence.update("We cannot keep going now.", 5, 5_600, true).committed == null)
+    val repaired = SourceGate()
+    repaired.update("We can proceed.", 0, 0)
+    check(repaired.update("We can proceed.", 1, 500).committed == "We can proceed.")
+    check(repaired.update("We cannot proceed.", 2, 1000).invalidatesCommitted)
+    val correction = repaired.update("We cannot proceed. More follows", 3, 1500)
+    check(correction.committed == "We cannot proceed." && correction.correctionRequired)
+    repaired.update("We cannot proceed. More follows.", 4, 2000)
+    check(repaired.update("We cannot proceed. More follows.", 5, 2500).committed == "More follows.")
+    for (shiftOnInvalidation in listOf(true, false)) {
+        val crossing = SourceGate()
+        crossing.update("We can cross today.", 0, 0)
+        crossing.update("We can cross today.", 1, 500)
+        check(crossing.update(if (shiftOnInvalidation) "cannot cross today." else "We cannot cross today.",
+            2, 1000, textOffset = if (shiftOnInvalidation) 3 else 0).invalidatesCommitted)
+        check(crossing.update("cannot cross today.", 3, 1500, true, 3).committed == "We cannot cross today.")
+    }
     val punctuation = SourceGate()
     punctuation.update("Dr. Smith paid 3.14 dollars", 0, 0)
     check(punctuation.update("Dr. Smith paid 3.14 dollars", 1, 500).committed == null)
@@ -76,41 +149,50 @@ fun main() {
         Segment(SegmentKey(session, sequence), "Source $sequence", sequence * 100, sequence * 100 + 50)
 
     val queue = TranslationQueue("one", capacity = 1, maxAgeMs = 1_000, contextCharacters = 20)
-    check(queue.submit(segment(0)) == null)
+    check(queue.submit(segment(0), 50) == null)
     val first = checkNotNull(queue.take())
     check(queue.take() == null)
-    check(queue.submit(segment(1)) == null)
-    check(queue.submit(segment(2))?.untranslatedReason == UntranslatedReason.BACKLOG)
+    check(queue.submit(segment(1), 150) == null)
+    check(queue.submit(segment(2), 250)?.untranslatedReason == UntranslatedReason.BACKLOG)
     check(queue.complete(first.segment.key.copy(sessionId = "old"), "old", 500) == null)
     check(queue.complete(first.segment.key.copy(revision = 1), "wrong", 500) == null)
     check(queue.complete(first.segment.key, "你好", 500)?.translation == "你好")
     check(queue.complete(first.segment.key, "duplicate", 500) == null)
     check(queue.take()?.context == listOf("Source 0"))
     check(queue.expire(1_150).single().untranslatedReason == UntranslatedReason.TIMED_OUT)
-    check(queue.submit(segment(3)) == null)
+    check(queue.submit(segment(3), 350) == null)
     check(queue.take() == null) // Expiry must not overlap an unjoined native worker.
     check(queue.expire(1_160).isEmpty())
     check(queue.complete(segment(1).key, "late", 1_170) == null)
     check(queue.stop().single().untranslatedReason == UntranslatedReason.STOPPED)
     check(queue.complete(segment(3).key, "late", 1_200) == null)
-    check(queue.submit(segment(4))?.untranslatedReason == UntranslatedReason.STOPPED)
+    check(queue.submit(segment(4), 450)?.untranslatedReason == UntranslatedReason.STOPPED)
+
+    val delayedAsr = TranslationQueue("one", maxAgeMs = 1_000)
+    delayedAsr.submit(segment(0), 20_000)
+    check(delayedAsr.expire(20_999).isEmpty())
+    val arrived = checkNotNull(delayedAsr.take())
+    check(arrived.submittedAtMs == 20_000L && arrived.segment.endMs == 50L)
+    check(delayedAsr.complete(arrived.segment.key, "translated", 20_999)?.translation == "translated")
+    delayedAsr.submit(segment(1), 21_000)
+    check(delayedAsr.expire(22_000).single().untranslatedReason == UntranslatedReason.TIMED_OUT)
 
     val stress = TranslationQueue("one", capacity = 3)
     val accounted = mutableSetOf<SegmentKey>()
-    repeat(1_000) { i -> stress.submit(segment(i.toLong()))?.let { accounted += it.segment.key } }
+    repeat(1_000) { i -> stress.submit(segment(i.toLong()), i * 100L + 50)?.let { accounted += it.segment.key } }
     check(stress.pendingCount == 3)
     stress.stop().forEach { accounted += it.segment.key }
     check(accounted.size == 1_000)
 
     val contextQueue = TranslationQueue("one", contextCharacters = 4)
-    contextQueue.submit(Segment(SegmentKey("one", 0), "Long source 😀", 0, 1))
-    contextQueue.submit(segment(1))
+    contextQueue.submit(Segment(SegmentKey("one", 0), "Long source 😀", 0, 1), 1)
+    contextQueue.submit(segment(1), 150)
     contextQueue.take()?.let { contextQueue.complete(it.segment.key, "ok", 100) }
     check(contextQueue.take()?.context?.isEmpty() == true)
 
     val correctionQueue = TranslationQueue("one")
-    correctionQueue.submit(segment(0)); correctionQueue.take()
-    correctionQueue.submit(segment(1))
+    correctionQueue.submit(segment(0), 50); correctionQueue.take()
+    correctionQueue.submit(segment(1), 150)
     val retracted = correctionQueue.invalidate(setOf(segment(0).key))
     check(retracted.single().untranslatedReason == UntranslatedReason.SUPERSEDED)
     check(correctionQueue.take() == null)
@@ -118,55 +200,23 @@ fun main() {
     check(correctionQueue.take()?.context?.isEmpty() == true)
     check(correctionQueue.stop().single().segment.key == segment(1).key)
 
-    val scheduler = CaptionScheduler(capacity = 1, minDwellMs = 1_600)
-    val a = Caption(segment(0), "第一句")
-    val b = Caption(segment(1), "第二句")
-    check(scheduler.offer(a))
-    check(scheduler.tick(0)?.caption == a)
-    check(scheduler.offer(b))
-    check(!scheduler.offer(b))
-    check(scheduler.tick(1_599)?.caption == a)
-    check(scheduler.tick(1_600)?.caption == b)
-    check(scheduler.tick(3_200) == null)
-    check(!scheduler.offer(a))
-    val paging = CaptionScheduler()
-    check(paging.offer(a, listOf("One", "Two"), listOf("一", "二", "三")))
-    check(paging.tick(0)?.index == 0)
-    check(paging.tick(1_600)?.index == 1)
-    check(paging.tick(3_200)?.index == 2)
-    paging.invalidate(setOf(a.segment.key))
-    check(paging.tick(3_300) == null)
-    val reflow = CaptionScheduler()
-    reflow.offer(a); reflow.tick(0); reflow.offer(b)
-    reflow.reflow { text, _ -> text.map { it.toString() } }
-    check(reflow.tick(10)?.total == a.segment.source.length)
-    reflow.invalidate(setOf(a.segment.key))
-    check(reflow.tick(20)?.caption == b)
-    // Parallel languages must not make a readable page wait for both texts in sequence.
-    val bilingual = CaptionScheduler()
-    bilingual.offer(a, listOf("a".repeat(40)), listOf("中".repeat(20)))
-    check(bilingual.tick(0)?.caption == a)
-    bilingual.offer(b)
-    check(bilingual.tick(1_999)?.caption == a)
-    check(bilingual.tick(2_000)?.caption == b)
-    // Mixed scripts, supplementary Han, and source-only outcomes use the same reading budget.
-    val mixed = CaptionScheduler()
-    mixed.offer(a, listOf("a".repeat(20) + "𠀀".repeat(20)), emptyList())
-    check(mixed.tick(0)?.caption == a)
-    mixed.offer(b)
-    check(mixed.tick(2_999)?.caption == a)
-    check(mixed.tick(3_000)?.caption == b)
-    val kana = CaptionScheduler()
-    kana.offer(a, listOf("あア한".repeat(10)), emptyList())
-    check(kana.tick(0)?.caption == a)
-    kana.offer(b)
-    check(kana.tick(2_999)?.caption == a)
-    check(kana.tick(3_000)?.caption == b)
-    val capped = CaptionScheduler()
-    capped.offer(a, listOf("中".repeat(100)), listOf("a".repeat(200)))
-    check(capped.tick(0)?.caption == a)
-    capped.offer(b)
-    check(capped.tick(5_999)?.caption == a)
-    check(capped.tick(6_000)?.caption == b)
-    println("PASS: source/semantic gates, corrections, queue bounds, stale results, timeout, stop, completeness, reading dwell")
+    val feed = CaptionFeed(capacity = 2)
+    feed.submit(segment(0))
+    check(feed.progress(segment(0).key, "第一"))
+    check(!feed.progress(segment(0).key.copy(sessionId = "stale"), "旧结果"))
+    check(!feed.progress(segment(0).key, "第"))
+    feed.complete(Caption(segment(0), "第一句"))
+    check(!feed.progress(segment(0).key, "第一句迟到"))
+    feed.submit(segment(1))
+    feed.progress(segment(1).key, "未完成的")
+    feed.complete(Caption(segment(1), untranslatedReason = UntranslatedReason.STOPPED))
+    check(feed.lines.last().translation == "未完成的" && feed.lines.last().outcome?.translation == null)
+    feed.submit(segment(2))
+    check(feed.lines.map { it.segment.key.sequence } == listOf(1L, 2L))
+    feed.invalidate(setOf(segment(1).key))
+    check(feed.lines.single().segment.key == segment(2).key)
+    check(TranslationFormat.MURASAKI.preview("<thi").isEmpty())
+    check(TranslationFormat.MURASAKI.preview("<think>private").isEmpty())
+    check(TranslationFormat.MURASAKI.preview("<think>private</think>译文") == "译文")
+    println("PASS: continuous windows, revisions, queue arrival budgets, stable caption feed and streamed preview")
 }

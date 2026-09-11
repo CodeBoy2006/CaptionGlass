@@ -13,7 +13,7 @@ import java.util.concurrent.Executors
 enum class CaptureStatus {
     IDLE, PREPARING, WAITING, HEARING, SILENT,
     STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED,
-    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, ASR_LIMIT, START_FAILED,
+    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, START_FAILED,
 }
 
 /** A stop cause the UI can explain without parsing exception text. */
@@ -26,9 +26,8 @@ data class CaptureState(
     val status: CaptureStatus = CaptureStatus.IDLE,
     val stable: String = "",
     val provisional: String = "",
-    val page: CaptionPage? = null,
+    val lines: List<CaptionLine> = emptyList(),
     val history: List<Caption> = emptyList(),
-    val readingBehind: Int = 0,
     val translationBacklog: Int = 0,
     val confirmed: Int = 0,
     val outcomes: Int = 0,
@@ -41,7 +40,6 @@ internal data class PcmFrame(val samples: FloatArray, val sampleRate: Int, val e
 internal class CaptionSession(
     private val scope: CoroutineScope,
     private val selection: ModelSelection,
-    private val paginate: (String, Boolean) -> List<String>,
     private val publish: (CaptureState) -> Unit,
 ) {
     private val asrWorker = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -50,10 +48,10 @@ internal class CaptionSession(
     private val pcm = Channel<PcmFrame>(100)
     private val id = UUID.randomUUID().toString()
     private val queue = TranslationQueue(id, contextCharacters = 512)
-    private val scheduler = CaptionScheduler()
+    private val feed = CaptionFeed()
     private var state = CaptureState(active = true, selection = selection, status = CaptureStatus.PREPARING)
     private var gate = SourceGate(language = selection.languages.source)
-    private val utteranceKeys = mutableSetOf<SegmentKey>()
+    private val utteranceKeys = mutableMapOf<SegmentKey, Long>()
     private var revision = 0
     private var sequence = 0L
     private var segmentStart = 0L
@@ -93,15 +91,13 @@ internal class CaptionSession(
                 }
                 val tail = withContext(asrWorker) { checkNotNull(recognizer).finish(sampleRate) }
                 tail.forEach { hypothesis(it, endMs) }
-            } catch (e: Exception) { failure = e; stop(if (e is SpeechWindowLimit) CaptureStatus.ASR_LIMIT else CaptureStatus.RECOGNITION_FAILED) }
+            } catch (e: Exception) { failure = e; stop(CaptureStatus.RECOGNITION_FAILED) }
         }
         ticker = scope.launch {
             while (isActive) {
                 queue.expire(now()).forEach(::outcome)
                 if (queue.cancelledActiveKey != null) activeCall?.cancel()
                 pump()
-                val page = if (stopped) null else scheduler.tick(now())
-                if (state.page != page) update { copy(page = page) }
                 delay(80)
             }
         }
@@ -114,23 +110,25 @@ internal class CaptionSession(
     }
 
     private fun hypothesis(result: Hypothesis, atMs: Long) {
-        check(result.text.length <= 8_192) { "识别原文超过单段上限，请重新开始" }
-        val source = gate.update(result.text, revision++, atMs, result.final)
+        val source = gate.update(result.text, revision++, atMs, result.final, result.textOffset)
+        utteranceKeys.entries.removeAll { it.value <= source.retainedFrom }
         if (source.invalidatesCommitted) {
-            queue.invalidate(utteranceKeys).forEach(::outcome)
-            scheduler.invalidate(utteranceKeys)
+            feed.invalidate(utteranceKeys.keys)
+            queue.invalidate(utteranceKeys.keys).forEach(::outcome)
             if (queue.cancelledActiveKey != null) activeCall?.cancel()
             update { copy(history = history.map { if (it.segment.key in utteranceKeys)
-                Caption(it.segment, untranslatedReason = UntranslatedReason.SUPERSEDED) else it }, page = null) }
+                Caption(it.segment, untranslatedReason = UntranslatedReason.SUPERSEDED) else it }, lines = feed.lines) }
+            utteranceKeys.clear()
         }
-        update { copy(stable = source.stable, provisional = source.provisional) }
+        update { copy(stable = source.pendingStable, provisional = source.provisional) }
         source.committed?.let { text ->
             val key = SegmentKey(id, sequence++, if (source.correctionRequired) 1 else 0)
-            utteranceKeys += key
+            utteranceKeys[key] = source.committedEnd
             val segment = Segment(key, text, segmentStart.coerceAtMost(atMs), atMs)
             segmentStart = atMs
-            update { copy(confirmed = confirmed + 1) }
-            queue.submit(segment)?.let(::outcome)
+            feed.submit(segment)
+            update { copy(confirmed = confirmed + 1, lines = feed.lines) }
+            queue.submit(segment, now())?.let(::outcome)
             pump()
         }
         if (result.final) {
@@ -139,16 +137,11 @@ internal class CaptionSession(
     }
 
     private fun outcome(caption: Caption) {
-        // Overflow is an immediate status/history outcome, not a future subtitle that skips
-        // past older translations still in flight. Reading and inference overflow stay distinct.
-        val show = caption.untranslatedReason !in listOf(UntranslatedReason.SUPERSEDED, UntranslatedReason.BACKLOG) && !stopped
-        val accepted = !show || scheduler.offer(caption, paginate(caption.segment.source, false),
-            caption.translation?.let { paginate(it, true) }.orEmpty())
+        feed.complete(caption)
         // ponytail: last 200 terminal outcomes in memory; durable history/export belongs to M2.
         update { copy(history = (history + caption).sortedBy { it.segment.key.sequence }.takeLast(200), outcomes = outcomes + 1,
-            page = if (stopped) null else scheduler.tick(now()),
-            translationBacklog = translationBacklog + if (caption.untranslatedReason == UntranslatedReason.BACKLOG) 1 else 0,
-            readingBehind = readingBehind + if (accepted) 0 else 1) }
+            lines = feed.lines,
+            translationBacklog = translationBacklog + if (caption.untranslatedReason == UntranslatedReason.BACKLOG) 1 else 0) }
     }
 
     private fun pump() {
@@ -158,26 +151,29 @@ internal class CaptionSession(
             while (!stopped) {
                 queue.expire(now()).forEach(::outcome)
                 val request = queue.take() ?: break
-                val call = NativeCall((8_000 - (now() - request.segment.endMs)).coerceAtLeast(1))
+                val call = NativeCall((8_000 - (now() - request.submittedAtMs)).coerceAtLeast(1))
                 activeCall = call
                 val translated = try {
-                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages, call) }
+                    withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages, call,
+                        onProgress = { text -> scope.launch {
+                            if (!stopped && activeCall === call && queue.cancelledActiveKey != request.segment.key &&
+                                feed.progress(request.segment.key, text)) update { copy(lines = feed.lines) }
+                        } }) }
                 } catch (_: Exception) { null }
                 finally { call.close(); activeCall = null }
-                queue.complete(request.segment.key, translated, maxOf(now(), request.segment.endMs))?.let(::outcome)
+                queue.complete(request.segment.key, translated, now())?.let(::outcome)
             }
         }
     }
 
     fun status(value: CaptureStatus) { if (!stopped && state.status != value) update { copy(status = value) } }
-    fun reflow() { scheduler.reflow(paginate) }
     fun stop(reason: CaptureStatus = CaptureStatus.STOPPED) {
         if (stopped) return
         stopped = true
         queue.stop().forEach(::outcome)
         activeCall?.cancel()
         pcm.close()
-        update { copy(stopping = true, status = reason, page = null) }
+        update { copy(stopping = true, status = reason) }
     }
 
     suspend fun close() {
@@ -192,7 +188,7 @@ internal class CaptionSession(
         withContext(mtWorker) { translator?.close(); translator = null }
         asrWorker.close(); mtWorker.close()
         closed = true
-        update { copy(active = false, stopping = false, page = null, status = if (stopped) status else CaptureStatus.ENDED) }
+        update { copy(active = false, stopping = false, status = if (stopped) status else CaptureStatus.ENDED) }
         failure?.let { throw it }
     }
 }

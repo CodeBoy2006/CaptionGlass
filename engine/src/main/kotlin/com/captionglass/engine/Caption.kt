@@ -28,4 +28,4 @@ data class Caption(
     }
 }
 
-data class TranslationRequest(val segment: Segment, val context: List<String>)
+data class TranslationRequest(val segment: Segment, val context: List<String>, val submittedAtMs: Long)

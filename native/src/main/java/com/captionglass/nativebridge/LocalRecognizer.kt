@@ -5,7 +5,7 @@ import com.captionglass.engine.Language
 import java.io.Closeable
 import java.io.File
 
-data class Hypothesis(val text: String, val final: Boolean)
+data class Hypothesis(val text: String, val final: Boolean, val textOffset: Long = 0)
 data class RecognizerFiles(val paths: Map<String, File>, val adapter: String,
                            val decodingMethod: String, val language: Language? = null) {
     init { require(decodingMethod in setOf("greedy_search", "modified_beam_search")) }
@@ -29,7 +29,9 @@ class LocalRecognizer(files: RecognizerFiles) : Closeable {
                         transducer = OnlineTransducerModelConfig(encoder = files.path("encoder"),
                             decoder = files.path("decoder"), joiner = files.path("joiner")),
                         tokens = files.path("tokens"), numThreads = 1, provider = "cpu"),
-                    endpointConfig = EndpointConfig(rule2 = EndpointRule(true, 1.2f, 0f)),
+                    // Override the library's duration-only 20 s rule: endpoints require a pause.
+                    endpointConfig = EndpointConfig(rule2 = EndpointRule(true, 1.2f, 0f),
+                        rule3 = EndpointRule(true, 1.2f, 0f)),
                     enableEndpoint = true, decodingMethod = files.decodingMethod, maxActivePaths = 4))
                 recognizer = online
                 stream = online.createStream()
@@ -52,7 +54,7 @@ class LocalRecognizer(files: RecognizerFiles) : Closeable {
         while (online.isReady(audio)) {
             online.decode(audio)
             val endpoint = online.isEndpoint(audio)
-            add(Hypothesis(online.getResult(audio).text.trim(), endpoint))
+            add(hypothesis(online.getResult(audio).text.trim(), endpoint))
             if (endpoint) online.reset(audio)
         }
     }
@@ -65,7 +67,13 @@ class LocalRecognizer(files: RecognizerFiles) : Closeable {
         // Stop-only tail flush covers the pinned streaming chunks.
         audio.acceptWaveform(FloatArray(sampleRate * 96 / 100), sampleRate)
         audio.inputFinished()
-        return decode() + Hypothesis(checkNotNull(recognizer).getResult(audio).text.trim(), true)
+        return decode() + hypothesis(checkNotNull(recognizer).getResult(audio).text.trim(), true)
+    }
+
+    private fun hypothesis(text: String, final: Boolean): Hypothesis {
+        var offset = (text.length - 4_096).coerceAtLeast(0)
+        if (offset > 0 && text[offset].isLowSurrogate()) offset++
+        return Hypothesis(text.substring(offset), final, offset.toLong())
     }
 
     override fun close() {

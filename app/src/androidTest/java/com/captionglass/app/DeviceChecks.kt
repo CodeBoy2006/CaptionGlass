@@ -28,10 +28,11 @@ class DeviceChecks : Instrumentation() {
     override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; requestedModel = arguments?.getString("model"); requestedTranslator = arguments?.getString("mt"); start() }
     private fun report(text: String) { sendStatus(0, Bundle().apply { putString("stream", "$text\n") }) }
     override fun onStart() {
-        val activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val activity = startActivitySync(Intent(targetContext, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "latency", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
@@ -41,16 +42,21 @@ class DeviceChecks : Instrumentation() {
                 runBlocking { modelManagerChecks(mode == "model-network") }
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") }); return
             }
-            if (mode == "pipeline-model") {
-                val selected = ModelSelection(LanguagePair(Language.JA, Language.ZH), checkNotNull(requestedModel),
+            if (mode in listOf("pipeline-model", "continuity")) {
+                val model = catalog.models.single { it.id == requestedModel }
+                val source = if (mode == "continuity" && Language.EN in model.languages) Language.EN else Language.JA
+                val selected = ModelSelection(LanguagePair(source, Language.ZH), model.id,
                     requestedTranslator ?: ModelSelection().translatorId)
                 check(catalog.valid(selected))
                 catalog.required(selected).forEach { ModelPack.verify(targetContext, it) }
                 runBlocking {
-                    replay("ja", Language.ZH, recognizerId = selected.recognizerId, translatorId = selected.translatorId)
-                    replay("ja", Language.ZH, stopAtMs = 4500, recognizerId = selected.recognizerId, translatorId = selected.translatorId)
+                    replay(source.code, Language.ZH, recognizerId = selected.recognizerId, translatorId = selected.translatorId,
+                        repetitions = if (mode == "continuity") 4 else 1)
+                    replay(source.code, Language.ZH, stopAtMs = if (mode == "continuity") 24_000 else 4500,
+                        recognizerId = selected.recognizerId, translatorId = selected.translatorId,
+                        repetitions = if (mode == "continuity") 4 else 1)
                 }
-                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: pipeline-model\n") }); return
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") }); return
             }
             if (mode == "adapter") {
                 val model = catalog.models.single { it.id == requestedModel }
@@ -123,9 +129,8 @@ class DeviceChecks : Instrumentation() {
                     replay("en", Language.JA, recognizerId = multilingual.id)
                 }
                 if (mode in listOf("all", "fallback")) fallbackCheck()
-                if (mode == "latency") {
-                    replay("en", Language.ZH, repetitions = 4)
-                    replay("zh", Language.EN, repetitions = 4)
+                if (mode == "reading") {
+                    replay("en", Language.ZH, repetitions = 2)
                 }
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") })
@@ -217,7 +222,13 @@ class DeviceChecks : Instrumentation() {
                     report("MT ${model.timings()}")
                 } } finally { call.close() }
             }
-            check(translate("Good subtitles give you time to read.", Language.ZH).any { it in '\u4e00'..'\u9fff' })
+            NativeCall(30_000).use { call ->
+                val previews = mutableListOf<String>()
+                val result = model.translate("Good subtitles give you time to read.", emptyList(), LanguagePair(Language.EN, Language.ZH), call,
+                    onProgress = { previews += it })
+                check(previews.any { it.isNotBlank() } && previews.all { '\ufffd' !in it && result.startsWith(it) })
+                report("PASS: actual Vulkan translation streamed ${previews.size} UTF-8 previews before completion: $result")
+            }
             check(translate("今天天气很好，我们去公园散步。", Language.EN, Language.ZH).contains("park", ignoreCase = true))
             check(translate("今日はいい天気です。", Language.ZH, Language.JA).contains("天气"))
             check(translate("今日はいい天気です。", Language.EN, Language.JA).contains("weather", ignoreCase = true))
@@ -231,6 +242,15 @@ class DeviceChecks : Instrumentation() {
                 val start = SystemClock.elapsedRealtime()
                 check(runCatching { model.translate("Hello", emptyList(), LanguagePair(Language.EN, Language.ZH), call) }.isFailure)
                 check(SystemClock.elapsedRealtime() - start < 1000)
+            }
+            NativeCall(30_000).use { call ->
+                var streamed = false
+                check(runCatching { model.translate("Good subtitles give you time to read.", emptyList(),
+                    LanguagePair(Language.EN, Language.ZH), call, onProgress = {
+                        if (it.isNotBlank()) { streamed = true; call.cancel() }
+                    }) }.isFailure)
+                check(streamed)
+                report("PASS: cancellation during streamed output rejects partial completion")
             }
             NativeCall(200).use { call ->
                 val start = SystemClock.elapsedRealtime()
@@ -268,9 +288,15 @@ class DeviceChecks : Instrumentation() {
                                recognizerId: String = if (name == "ja") multilingual.id else baseline.id,
                                translatorId: String = ModelSelection().translatorId) = withContext(Dispatchers.Main) {
         val samples = withContext(Dispatchers.IO) {
-            val input = readWave(File(targetContext.filesDir, "fixtures/$name.wav"))
-            // Explicit test silence lets all reading pages finish after the repeated speech.
-            if (repetitions == 1) input else FloatArray(input.size * repetitions + 16_000 * 45) {
+            val original = readWave(File(targetContext.filesDir, "fixtures/$name.wav"))
+            // Test-only concatenation removes fixture padding, not production audio.
+            val input = if (mode == "continuity") {
+                val first = original.indexOfFirst { kotlin.math.abs(it) > 0.0003f }
+                val last = original.indexOfLast { kotlin.math.abs(it) > 0.0003f }
+                original.copyOfRange(first, last + 1)
+            } else original
+            // Explicit test silence lets ASR confirm the final tail after repeated speech.
+            if (repetitions == 1) input else FloatArray(input.size * repetitions + 16_000 * 2) {
                 if (it < input.size * repetitions) input[it % input.size] else 0f
             }
         }
@@ -278,42 +304,31 @@ class DeviceChecks : Instrumentation() {
         val overlay = SubtitleOverlay(targetContext)
         var latest = CaptureState()
         val reported = mutableSetOf<Long>()
-        val readyAt = mutableMapOf<Long, Long>()
-        val displayed = mutableSetOf<Pair<Long, Int>>()
-        val displayWaits = mutableListOf<Long>()
         var firstSource = 0L
         var firstTranslation = 0L
         var began = 0L
         var stopping = false
         val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId, translatorId)
-        val session = CaptionSession(scope, selection, overlay::pages) { state ->
-            if (stopping) check(state.page == null) { "Stop restored a subtitle" }
+        val session = CaptionSession(scope, selection) { state ->
             val elapsed = SystemClock.elapsedRealtime() - began
-            if (mode == "latency" && state.confirmed > latest.confirmed)
+            if (mode == "reading" && state.confirmed > latest.confirmed)
                 report("COMMIT $name sequence=${state.confirmed - 1} at_ms=$elapsed")
+            if (mode == "continuity" && (state.stable != latest.stable || state.provisional != latest.provisional))
+                report("SOURCE $name at_ms=$elapsed: ${state.stable}|${state.provisional}")
             latest = state
-            if (firstSource == 0L && state.stable.isNotBlank()) firstSource = SystemClock.elapsedRealtime() - began
+            if (firstSource == 0L && (state.stable.isNotBlank() || state.provisional.isNotBlank() || state.lines.isNotEmpty())) firstSource = SystemClock.elapsedRealtime() - began
             state.history.forEach { caption ->
                 if (reported.add(caption.segment.key.sequence)) {
-                    readyAt[caption.segment.key.sequence] = elapsed
                     if (caption.translation != null && firstTranslation == 0L) firstTranslation = SystemClock.elapsedRealtime() - began
                     report("REPLAY $name end_ms=${caption.segment.endMs} result_ms=${SystemClock.elapsedRealtime() - began}: ${caption.segment.source} => ${caption.translation ?: caption.untranslatedReason}")
                 }
             }
-            if (mode == "latency") {
-                overlay.render(state)
-                state.page?.let { page ->
-                    val sequence = page.caption.segment.key.sequence
-                    if (displayed.add(sequence to page.index)) {
-                        val wait = elapsed - checkNotNull(readyAt[sequence])
-                        displayWaits += wait
-                        report("DISPLAY $name sequence=$sequence page=${page.index + 1}/${page.total} at_ms=$elapsed ready_wait_ms=$wait")
-                    }
-                }
-            }
+            if (firstTranslation == 0L && state.lines.any { it.translation.isNotEmpty() }) firstTranslation = elapsed
+            if (mode == "reading") overlay.render(state)
+
         }
         try {
-            if (mode == "latency") overlay.show()
+            if (mode == "reading") overlay.show()
             session.start(catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator(selection).file(targetContext, "model"), catalog.translator(selection).translationFormat)
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
@@ -331,28 +346,86 @@ class DeviceChecks : Instrumentation() {
                     break
                 }
             }
-            if (mode == "latency") check(latest.page == null) { "Reading has not drained after the trailing test silence" }
             session.close()
             check(latest.confirmed == latest.outcomes && latest.confirmed > 0)
+            check(latest.status in listOf(CaptureStatus.ENDED, CaptureStatus.STOPPED)) { "Unexpected stop: ${latest.status}" }
             if (stopAtMs == null) check(latest.history.any { it.translation != null }) { "No successful translation: ${latest.history}" }
             else check(latest.history.any { it.untranslatedReason == com.captionglass.engine.UntranslatedReason.STOPPED })
-            val source = latest.history.joinToString(" ") { it.segment.source }
+            val source = latest.history.filter { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED }
+                .joinToString(" ") { it.segment.source }
+            if (mode == "continuity" && stopAtMs == null) {
+                val anchor = if (name == "ja") "天気" else "good subtitles"
+                val count = Regex(anchor, RegexOption.IGNORE_CASE).findAll(source).count()
+                check(count == repetitions) { "Repeated speech coverage $count/$repetitions: $source" }
+            }
             check(when (name) { "zh" -> source.contains("公园"); "ja" -> source.contains("天気"); else -> source.contains("subtitles", ignoreCase = true) }) { "Unexpected ASR: $source" }
             report("REPLAY $name stop_at_ms=$stopAtMs audio_ms=${position * 1000L / 16000} elapsed_ms=${SystemClock.elapsedRealtime() - began} first_source_ms=$firstSource first_translation_ms=$firstTranslation confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
-            if (mode == "latency") {
-                check(latest.history.all { it.translation != null }) { "Untranslated benchmark segment: ${latest.history}" }
-                val expectedPages = latest.history.sumOf { maxOf(overlay.pages(it.segment.source, false).size,
-                    overlay.pages(checkNotNull(it.translation), true).size) }
-                check(displayed.size == expectedPages && latest.readingBehind == 0) { "Reading coverage ${displayed.size}/$expectedPages, overflow=${latest.readingBehind}" }
-                report("LATENCY $name pages=${displayed.size} ready_wait_mean_ms=${displayWaits.average().toLong()} ready_wait_max_ms=${displayWaits.maxOrNull()}")
+            if (mode == "reading") {
+                check(latest.lines.size == latest.history.count { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED })
+                readingViewportCheck(overlay.captions, latest)
+                val retained = latest.lines
+                report("READING HOLD: completed bilingual text remains visible; scroll and font checks may run now")
+                delay(30_000)
+                check(latest.lines == retained && retained.isNotEmpty())
+                report("PASS: completed text retained for 30 seconds without paging or expiry")
             }
-            val longText = "Long subtitles must be paged completely. 很长的字幕需要完整分页。".repeat(30)
-            check(overlay.pages(longText, true).joinToString("") == longText)
+
         } catch (e: Throwable) {
             session.stop()
             runCatching { session.close() }
             throw e
         } finally { overlay.close(); scope.cancel() }
+    }
+
+    private suspend fun readingViewportCheck(view: CaptionTranscriptView, state: CaptureState) {
+        check(state.lines.size >= 4)
+        val height = view.maximumHeight
+        view.maximumHeight = (120 * targetContext.resources.displayMetrics.density).toInt()
+        view.requestLayout()
+        view.render(state.copy(lines = state.lines.take(3)))
+        delay(150)
+        check(view.scrollY > 0)
+        fun gestureScroll(bottom: Boolean) {
+            val time = SystemClock.uptimeMillis()
+            android.view.MotionEvent.obtain(time, time, android.view.MotionEvent.ACTION_DOWN, 20f, 20f, 0).let {
+                view.dispatchTouchEvent(it); it.recycle()
+            }
+            view.scrollTo(0, if (bottom) view.getChildAt(0).height else 0)
+            android.view.MotionEvent.obtain(time, time + 50, android.view.MotionEvent.ACTION_UP, 20f, 20f, 0).let {
+                view.dispatchTouchEvent(it); it.recycle()
+            }
+        }
+        gestureScroll(false)
+        view.render(state)
+        delay(150)
+        check(view.scrollY == 0) { "New text moved the reader away from an earlier row" }
+        gestureScroll(true)
+        view.render(state.copy(lines = state.lines.take(3)))
+        delay(150)
+        view.render(state)
+        delay(150)
+        check(!view.canScrollVertically(1)) { "Returning to the bottom did not restore following" }
+        check(view.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, null))
+        delay(400)
+        val readPosition = view.scrollY
+        check(view.canScrollVertically(1))
+        view.render(state)
+        delay(150)
+        check(view.scrollY == readPosition) { "A streamed update reset accessibility scrolling" }
+        val source = state.lines.last().segment.source
+        view.render(state.copy(stable = "", provisional = source))
+        delay(150)
+        view.render(state.copy(stable = source, provisional = ""))
+        delay(150)
+        val content = view.getChildAt(0) as android.widget.LinearLayout
+        val draft = content.getChildAt(content.childCount - 1) as android.widget.TextView
+        val styled = draft.text as android.text.Spanned
+        check(styled.getSpans(0, styled.length, android.text.style.ForegroundColorSpan::class.java)
+            .all { styled.getSpanStart(it) >= source.length }) { "Unchanged text retained a stale provisional color" }
+        view.maximumHeight = height
+        view.requestLayout()
+        view.render(state)
+        report("PASS: scrolling back holds the reading position; returning to the bottom resumes following")
     }
 
     private suspend fun fallbackCheck(model: ModelSpec = baseline) = withContext(Dispatchers.Default) {

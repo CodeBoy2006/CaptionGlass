@@ -54,11 +54,6 @@ internal fun SelectionControls(selection: ModelSelection, catalog: ModelCatalog,
                 Icon(painterResource(R.drawable.ic_chevron_right), stringResource(R.string.choose_model))
             }
         }
-        if (pair.source != com.captionglass.engine.Language.EN && pair.source != com.captionglass.engine.Language.ZH ||
-            pair.target != com.captionglass.engine.Language.EN && pair.target != com.captionglass.engine.Language.ZH ||
-            recognizer.id != ModelSelection().recognizerId || selection.translatorId != ModelSelection().translatorId)
-            Text(stringResource(R.string.experimental_languages), Modifier.padding(horizontal = 4.dp),
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (chooser != 0 && enabled) ModalBottomSheet(onDismissRequest = { chooser = 0 },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {

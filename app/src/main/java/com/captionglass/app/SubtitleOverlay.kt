@@ -4,22 +4,13 @@ import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Canvas
+import android.content.res.Configuration
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.graphics.text.LineBreaker
 import android.hardware.input.InputManager
 import android.os.Build
-import android.text.Layout
-import android.text.SpannableString
-import android.text.Spanned
-import android.text.StaticLayout
-import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -37,8 +28,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Two native windows. The caption card passes touches through by default; a small handle above it stays
- * touchable for dragging, and a tap on it switches the card to blocking touches (outlined) and back.
+ * Two native windows. The readable card scrolls; the handle moves it or switches touch passthrough.
  */
 internal class SubtitleOverlay(private val context: Context) {
     private val windows = context.getSystemService(WindowManager::class.java)
@@ -46,16 +36,9 @@ internal class SubtitleOverlay(private val context: Context) {
     private val density = context.resources.displayMetrics.density
     private fun dp(value: Int) = (value * density).toInt()
 
-    private val translation = text(20f, CaptionPalette.TRANSLATION).apply { typeface = Typeface.create(Typeface.DEFAULT, 500, false) }
-    private val source = text(15f, CaptionPalette.SOURCE)
-    private val pageBar = PageBar(context)
+    val captions = CaptionTranscriptView(context)
     private val statusIcon = ImageView(context)
     private val statusLabel = TextView(context).apply { textSize = 14f; maxLines = 1 }
-    private val captions = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(translation); addView(source)
-        addView(pageBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(8) })
-    }
     private val status = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -65,7 +48,12 @@ internal class SubtitleOverlay(private val context: Context) {
     }
     private val cardShape = GradientDrawable().apply { setColor(CaptionPalette.STAGE); cornerRadius = dp(18).toFloat() }
     private val card = FrameLayout(context).apply { background = cardShape; addView(captions); addView(status) }
-    private val body = FrameLayout(context).apply {
+    private val body = object : FrameLayout(context) {
+        override fun onConfigurationChanged(newConfig: Configuration) {
+            super.onConfigurationChanged(newConfig)
+            if (attached) configurationChanged()
+        }
+    }.apply {
         addView(card, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.CENTER_HORIZONTAL))
     }
@@ -83,20 +71,17 @@ internal class SubtitleOverlay(private val context: Context) {
     // Android 12+ checks window opacity (not background alpha) before passing touches.
     private val passThroughAlpha = if (Build.VERSION.SDK_INT >= 31) minOf(0.8f,
         context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch) else 0.8f
+    private var passThrough = preferences.getBoolean("pass-through", false)
     private val bodyParams = parameters().apply {
-        flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        alpha = passThroughAlpha
+        if (passThrough) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        alpha = if (passThrough) passThroughAlpha else 1f
     }
     private val handleParams = parameters().apply { width = dp(HANDLE_WIDTH); height = dp(HANDLE_HEIGHT) }
     private val spin = ObjectAnimator.ofFloat(statusIcon, View.ROTATION, 0f, 360f).apply {
         duration = 900; repeatCount = ValueAnimator.INFINITE; interpolator = LinearInterpolator()
     }
-    private val pending = ObjectAnimator.ofFloat(translation, View.ALPHA, 0.3f, 0.85f).apply {
-        duration = 700; repeatCount = ValueAnimator.INFINITE; repeatMode = ValueAnimator.REVERSE
-    }
     private val rest = Runnable { pill.animate().alpha(0.5f).setDuration(400) }
     private var attached = false
-    private var passThrough = true
     private var x = 0
     private var y = 0
     private var orientation = context.resources.configuration.orientation
@@ -116,41 +101,15 @@ internal class SubtitleOverlay(private val context: Context) {
         styleTouchMode()
     }
 
-    private fun text(size: Float, color: Int) = TextView(context).apply {
-        textSize = size; setTextColor(color); maxLines = 2; includeFontPadding = true
-        breakStrategy = LineBreaker.BREAK_STRATEGY_SIMPLE
-        hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-    }
     private fun parameters() = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START }
 
-    /** Use portrait-width pages in both orientations; rotation never clips an already queued page. */
-    private fun pageWidth(): Int {
+    private fun bodyWidth(): Int {
         val metrics = context.resources.displayMetrics
-        return (minOf(metrics.widthPixels, metrics.heightPixels, dp(640)) - dp(56)).coerceAtLeast(dp(80))
-    }
-    // Card padding is exactly two dp(16), so text always gets the width pages were measured at.
-    private fun bodyWidth() = pageWidth() + 2 * dp(16)
-    fun pages(text: String, primary: Boolean): List<String> {
-        if (text.isEmpty()) return listOf("")
-        val paint = if (primary) translation.paint else source.paint
-        val result = mutableListOf<String>()
-        var offset = 0
-        while (offset < text.length) {
-            val remaining = text.substring(offset)
-            val layout = StaticLayout.Builder.obtain(remaining, 0, remaining.length, paint, pageWidth())
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(true)
-                .setBreakStrategy(LineBreaker.BREAK_STRATEGY_SIMPLE).setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE).build()
-            val end = if (layout.lineCount > 2) layout.getLineEnd(1) else text.length - offset
-            check(end > 0)
-            result += text.substring(offset, offset + end)
-            offset += end
-        }
-        return result
+        return (minOf(metrics.widthPixels, metrics.heightPixels, dp(640)) - dp(24)).coerceAtLeast(dp(120))
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -158,7 +117,6 @@ internal class SubtitleOverlay(private val context: Context) {
         if (attached) return
         bodyParams.width = bodyWidth()
         loadPosition()
-        body.setOnClickListener { toggleTouch() }
         handle.setOnClickListener { toggleTouch() }
         val drag = View.OnTouchListener { view, event ->
             when (event.actionMasked) {
@@ -179,7 +137,6 @@ internal class SubtitleOverlay(private val context: Context) {
             }
             true
         }
-        body.setOnTouchListener(drag)
         handle.setOnTouchListener(drag)
         position()
         windows.addView(body, bodyParams)
@@ -195,6 +152,7 @@ internal class SubtitleOverlay(private val context: Context) {
 
     private fun toggleTouch() {
         passThrough = !passThrough
+        preferences.edit { putBoolean("pass-through", passThrough) }
         bodyParams.flags = if (passThrough) bodyParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             else bodyParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         // Only a pass-through card must stay under the obscuring limit; a blocking card can be fully opaque.
@@ -215,46 +173,14 @@ internal class SubtitleOverlay(private val context: Context) {
         lastState = state
         if (!attached) return
         val previous = rendered
-        if (previous != null && previous.page == state.page && previous.stable == state.stable &&
+        if (previous != null && previous.lines == state.lines && previous.stable == state.stable &&
             previous.provisional == state.provisional && previous.status == state.status) return
         rendered = state
-        val page = state.page
-        val live = state.stable + state.provisional
-        when {
-            page != null -> {
-                pending.cancel(); translation.alpha = 1f
-                val reason = page.caption.untranslatedReason
-                if (page.translation != null) line(translation, page.translation, CaptionPalette.TRANSLATION)
-                else line(translation, reason?.let { context.getString(it.label) }, CaptionPalette.WARNING, reason?.icon)
-                line(source, page.source, CaptionPalette.SOURCE)
-                pageBar.show(page.index, page.total)
-                showCaptions()
-            }
-            live.isNotBlank() -> {
-                line(translation, context.getString(R.string.overlay_pending), CaptionPalette.TRANSLATION)
-                if (!pending.isRunning) pending.start()
-                val tail = SpannableString(pages(live, false).last())
-                val provisionalStart = (tail.length - state.provisional.length).coerceAtLeast(0)
-                if (provisionalStart < tail.length)
-                    tail.setSpan(ForegroundColorSpan(CaptionPalette.MUTED), provisionalStart, tail.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                line(source, tail, CaptionPalette.SOURCE)
-                pageBar.show(0, 0)
-                showCaptions()
-            }
-            else -> {
-                pending.cancel(); translation.alpha = 1f
-                showStatus(state.status)
-            }
-        }
-    }
-
-    private fun line(view: TextView, text: CharSequence?, color: Int, icon: Int? = null) {
-        view.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
-        view.text = text
-        view.setTextColor(color)
-        val drawable = icon?.let { context.getDrawable(it)?.mutate()?.apply { setTint(color); setBounds(0, 0, dp(18), dp(18)) } }
-        view.setCompoundDrawablesRelative(drawable, null, null, null)
-        view.compoundDrawablePadding = dp(6)
+        if (state.lines.isNotEmpty() || state.stable.isNotBlank() || state.provisional.isNotBlank()) {
+            captions.maximumHeight = minOf(dp(236), screen().height() / 3)
+            captions.render(state)
+            showCaptions()
+        } else showStatus(state.status)
     }
 
     private fun showCaptions() {
@@ -264,8 +190,6 @@ internal class SubtitleOverlay(private val context: Context) {
         captions.visibility = View.VISIBLE
         card.setPadding(dp(16), dp(10), dp(16), dp(12))
         card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply { width = FrameLayout.LayoutParams.MATCH_PARENT }
-        captions.alpha = 0f
-        captions.animate().alpha(1f).setDuration(160)
     }
 
     /** Before any words arrive the card shrinks to a compact chip: one symbol and a short word. */
@@ -290,7 +214,7 @@ internal class SubtitleOverlay(private val context: Context) {
 
     fun configurationChanged() {
         savePosition(); orientation = context.resources.configuration.orientation
-        translation.textSize = 20f; source.textSize = 15f; statusLabel.textSize = 14f
+        captions.reflow(); statusLabel.textSize = 14f
         bodyParams.width = bodyWidth()
         loadPosition(); position()
         rendered = null
@@ -320,44 +244,12 @@ internal class SubtitleOverlay(private val context: Context) {
     fun close() {
         if (!attached) return
         savePosition(); attached = false
-        spin.cancel(); pending.cancel(); pill.removeCallbacks(rest)
+        spin.cancel(); pill.removeCallbacks(rest)
         windows.removeView(handle); windows.removeView(body)
     }
 
     private companion object {
         const val HANDLE_WIDTH = 96
         const val HANDLE_HEIGHT = 48
-    }
-}
-
-/** Thin segments under a long caption: which page is showing and how many follow. */
-private class PageBar(context: Context) : View(context) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = CaptionPalette.TRANSLATION }
-    private val rect = RectF()
-    private var index = 0
-    private var total = 0
-
-    fun show(index: Int, total: Int) {
-        this.index = index; this.total = total
-        visibility = if (total > 1) VISIBLE else GONE
-        invalidate()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        if (total < 2) return
-        val gap = 4 * resources.displayMetrics.density
-        val radius = height / 2f
-        val segment = (width - gap * (total - 1)) / total
-        if (segment < gap) {
-            paint.alpha = 45; rect.set(0f, 0f, width.toFloat(), height.toFloat()); canvas.drawRoundRect(rect, radius, radius, paint)
-            paint.alpha = 230; rect.right = width * (index + 1f) / total; canvas.drawRoundRect(rect, radius, radius, paint)
-            return
-        }
-        repeat(total) { i ->
-            paint.alpha = when { i == index -> 230; i < index -> 110; else -> 45 }
-            val left = i * (segment + gap)
-            rect.set(left, 0f, left + segment, height.toFloat())
-            canvas.drawRoundRect(rect, radius, radius, paint)
-        }
     }
 }
