@@ -68,8 +68,23 @@
     <string name="overlay_allowed">已允许</string>
     <string name="overlay_denied">未允许</string>
     <string name="overlay_pass_through">穿透</string>
-    <string name="overlay_blocking">滚动</string>
+    <string name="overlay_blocking">拦截</string>
+    <string name="overlay_scrollable">滚动</string>
     <string name="overlay_gesture">轻点把手切换 · 拖动把手移动</string>
+    <string name="overlay_touch">触摸方式</string>
+    <string name="overlay_latest">回到最新</string>
+    <string name="display_title">字幕显示</string>
+    <string name="display_scroll">滚动</string>
+    <string name="display_two">两段</string>
+    <string name="display_one">一段</string>
+    <string name="display_scroll_hint">保留全部字幕；切到滚动后可上滑回看，回到底部继续跟随。</string>
+    <string name="display_two_hint">只显示最近两段；读完的一段自动上卷离开，无需手动滚动。</string>
+    <string name="display_one_hint">只显示正在翻译的一段和刚听到的原文，遮挡最少。</string>
+    <string name="style_title">外观</string>
+    <string name="style_plate">黑曜底板</string>
+    <string name="style_outline">描边</string>
+    <string name="style_plate_hint">深色底板，白色幻灯片和暗场上都清楚。</string>
+    <string name="style_outline_hint">去掉底板只留文字阴影，遮挡最少；亮色画面上可能不易看清。</string>
     <string name="settings_privacy">隐私</string>
     <string name="privacy_network">本地推理</string>
     <string name="privacy_microphone">不用麦克风</string>
@@ -77,7 +92,7 @@
     <string name="privacy_screen">不截画面</string>
     <string name="version">版本 %1$s</string>
 
-    <string name="overlay_handle">字幕把手，拖动移动，轻点切换滚动与触摸穿透</string>
+    <string name="overlay_handle">字幕把手，拖动移动，轻点切换触摸穿透</string>
 
     <string name="notification_channel">实时字幕</string>
     <string name="notification_title">字幕运行中</string>

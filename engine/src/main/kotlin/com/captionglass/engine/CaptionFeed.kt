@@ -30,3 +30,20 @@ class CaptionFeed(private val capacity: Int = 200) {
 
     fun invalidate(keys: Set<SegmentKey>) { keys.forEach(content::remove) }
 }
+
+/**
+ * Rows a compact caption surface keeps: the reading front and up to [segments] - 1 rows before it. Translation runs
+ * in row order, so the front is the first unfinished row once it has text; until then the last finished row stays,
+ * and a completed translation is never replaced by an empty placeholder. Later results never skip the front.
+ */
+fun readingWindow(lines: List<CaptionLine>, segments: Int): List<CaptionLine> {
+    require(segments > 0)
+    if (lines.size <= segments) return lines
+    val unfinished = lines.indexOfFirst { it.outcome == null }
+    val front = when {
+        unfinished < 0 -> lines.lastIndex
+        unfinished == 0 || lines[unfinished].translation.isNotEmpty() -> unfinished
+        else -> unfinished - 1
+    }
+    return lines.subList(maxOf(0, front - segments + 1), front + 1).toList()
+}

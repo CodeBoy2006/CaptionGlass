@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -36,17 +37,22 @@ private val Muted = Color(CaptionPalette.MUTED)
 private val Accent = Color(CaptionPalette.ACCENT)
 private val Warning = Color(CaptionPalette.WARNING)
 
-/** Uses the same persistent, scrollable transcript as the floating window. */
+/** Uses the same transcript and display choice as the floating window. */
 @Composable
-internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, modifier: Modifier = Modifier) {
-    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = LocalStage.current,
+internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, display: CaptionDisplay, modifier: Modifier = Modifier) {
+    val stage = LocalStage.current
+    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = stage,
         border = if (isSystemInDarkTheme()) BorderStroke(1.dp, Translation.copy(alpha = 0.07f)) else null) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
             StatusBadge(capture)
             Spacer(Modifier.height(14.dp))
             if (capture.lines.isNotEmpty() || capture.stable.isNotBlank() || capture.provisional.isNotBlank()) {
                 AndroidView(factory = { CaptionTranscriptView(it) }, modifier = Modifier.fillMaxWidth().height(240.dp),
-                    update = { it.render(capture) })
+                    update = {
+                        it.edgeColor = stage.toArgb()
+                        it.display = display
+                        it.render(capture)
+                    })
             } else Column(Modifier.fillMaxWidth().height(160.dp), verticalArrangement = Arrangement.Center) {
                 Text(languages.target.label, style = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Medium),
                     color = Translation.copy(alpha = 0.34f))

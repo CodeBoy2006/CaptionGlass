@@ -17,12 +17,20 @@ internal val PackPhase.label: Int
 internal object CaptionPalette {
     const val STAGE = 0xFF121815.toInt()
     const val STAGE_ON_DARK = 0xFF1B231F.toInt()
+    /** The floating plate: a green-biased black that darkens toward its bottom edge. */
+    const val PLATE_TOP = 0xFF0A0F0D.toInt()
+    const val PLATE_BOTTOM = 0xFF060908.toInt()
+    /** A hairline that outlines the plate on dark scenes, where the fill alone nearly matches the video. */
+    const val EDGE_TOP = 0x2EFFFFFF
+    const val EDGE_BOTTOM = 0x0FFFFFFF
     const val TRANSLATION = 0xFFFFFFFF.toInt()
-    const val SOURCE = 0xFFB4C0B9.toInt()
+    // Pass-through windows already multiply every colour by 0.8, so secondary text is lifted rather than dimmed.
+    const val SOURCE = 0xFFD9E3DD.toInt()
+    const val PROVISIONAL = 0xFFA3B3AB.toInt()
     const val MUTED = 0xFF85928B.toInt()
-    const val ACCENT = 0xFF78D8AC.toInt()
+    const val ACCENT = 0xFF8DEBC1.toInt()
     const val PROGRESS = 0xFFCCE4D7.toInt()
-    const val WARNING = 0xFFF2C47F.toInt()
+    const val WARNING = 0xFFFFD08A.toInt()
 }
 
 internal val CaptureStatus.isLive

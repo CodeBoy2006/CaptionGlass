@@ -379,6 +379,8 @@ class DeviceChecks : Instrumentation() {
 
     private suspend fun readingViewportCheck(view: CaptionTranscriptView, state: CaptureState) {
         check(state.lines.size >= 4)
+        // Reading-position checks cover the scrollable display; compact displays never scroll.
+        view.display = CaptionDisplay.SCROLL
         val height = view.maximumHeight
         view.maximumHeight = (120 * targetContext.resources.displayMetrics.density).toInt()
         view.requestLayout()

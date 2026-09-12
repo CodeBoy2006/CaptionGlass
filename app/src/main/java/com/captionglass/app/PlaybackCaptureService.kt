@@ -146,6 +146,7 @@ class PlaybackCaptureService : Service() {
         val beganAt = SystemClock.elapsedRealtime()
         var lastSignal = 0L
         var lastReport = 0L
+        val main = Handler(Looper.getMainLooper())
         try {
             while (!stopping) {
                 val count = audio.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
@@ -154,6 +155,11 @@ class PlaybackCaptureService : Service() {
                 samples += count
                 val values = FloatArray(count) { buffer[it] / 32768f }
                 if (!pipeline.offer(PcmFrame(values, rate, samples * 1000 / rate))) throw CaptureFailure(CaptureStatus.OVERRUN)
+                // Loudness for the listening chip only: -50 dBFS maps to 0 and -10 dBFS to 1. Nothing is stored.
+                var energy = 0.0
+                for (value in values) energy += value * value
+                val level = ((10 * kotlin.math.log10(energy / count + 1e-10) + 50) / 40).toFloat()
+                main.post { overlay?.level(level) }
                 val now = SystemClock.elapsedRealtime()
                 if ((0 until count).any { kotlin.math.abs(buffer[it].toInt()) > 64 }) lastSignal = now
                 if (now - lastReport >= 1000) {
