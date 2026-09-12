@@ -1,6 +1,6 @@
 # CaptionGlass M1 third-party components
 
-The application source is private and has no public distribution license yet.
+CaptionGlass application source is licensed under the MIT License; see [LICENSE](../LICENSE).
 The following upstream components keep their own licenses.
 
 | Component | Pinned source | License |
