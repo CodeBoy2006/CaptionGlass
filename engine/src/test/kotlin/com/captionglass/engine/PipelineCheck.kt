@@ -79,6 +79,8 @@ fun main() {
     val revise = TranslationFormat.STREAM_REVISE.prompt("こんにちは", listOf("前文"), LanguagePair(Language.JA, Language.ZH))
     check(revise.background == "Recent source utterances:\n前文" && revise.text.contains("from Japanese into Chinese"))
     check(runCatching { TranslationFormat.STREAM_REVISE.prompt("hello", emptyList(), LanguagePair(Language.EN, Language.FR)) }.isFailure)
+    val compactHistory = TranslationFormat.HY_MT2.prompt(literal, listOf("Old context", "Complete recent sentence."), LanguagePair(Language.EN, Language.ZH))
+    check(compactHistory.background == "Complete recent sentence." && compactHistory.text.endsWith(literal))
 
     val gate = SourceGate(maxWaitMs = 5_000)
     check(gate.update("I don't think he will", 0, 0).committed == null)
@@ -153,20 +155,30 @@ fun main() {
     val first = checkNotNull(queue.take())
     check(queue.take() == null)
     check(queue.submit(segment(1), 150) == null)
-    check(queue.submit(segment(2), 250)?.untranslatedReason == UntranslatedReason.BACKLOG)
+    check(queue.submit(segment(2), 250) == Caption(segment(1), untranslatedReason = UntranslatedReason.BACKLOG))
     check(queue.complete(first.segment.key.copy(sessionId = "old"), "old", 500) == null)
     check(queue.complete(first.segment.key.copy(revision = 1), "wrong", 500) == null)
     check(queue.complete(first.segment.key, "你好", 500)?.translation == "你好")
     check(queue.complete(first.segment.key, "duplicate", 500) == null)
-    check(queue.take()?.context == listOf("Source 0"))
-    check(queue.expire(1_150).single().untranslatedReason == UntranslatedReason.TIMED_OUT)
-    check(queue.submit(segment(3), 350) == null)
+    check(queue.take()?.context == listOf("Source 1"))
+    check(queue.expire(1_250).single().untranslatedReason == UntranslatedReason.TIMED_OUT)
+    check(queue.submit(segment(3), 1_260) == null)
     check(queue.take() == null) // Expiry must not overlap an unjoined native worker.
-    check(queue.expire(1_160).isEmpty())
-    check(queue.complete(segment(1).key, "late", 1_170) == null)
+    check(queue.expire(1_270).isEmpty())
+    check(queue.complete(segment(2).key, "late", 1_280) == null)
     check(queue.stop().single().untranslatedReason == UntranslatedReason.STOPPED)
-    check(queue.complete(segment(3).key, "late", 1_200) == null)
-    check(queue.submit(segment(4), 450)?.untranslatedReason == UntranslatedReason.STOPPED)
+    check(queue.complete(segment(3).key, "late", 1_290) == null)
+    check(queue.submit(segment(4), 1_300)?.untranslatedReason == UntranslatedReason.STOPPED)
+
+    // A slow active call must not leave the next call only the expired backlog's remaining budget.
+    val live = TranslationQueue("one")
+    live.submit(segment(0), 0); live.take()
+    live.submit(segment(1), 2_000)
+    check(live.submit(segment(2), 4_000)?.segment?.key == segment(1).key)
+    check(live.submit(segment(3), 6_000)?.segment?.key == segment(2).key)
+    check(live.complete(segment(0).key, "first", 7_000)?.translation == "first")
+    check(live.take()?.segment?.key == segment(3).key && live.pendingCount == 0)
+    check(live.complete(segment(3).key, "fresh", 12_000)?.translation == "fresh")
 
     val delayedAsr = TranslationQueue("one", maxAgeMs = 1_000)
     delayedAsr.submit(segment(0), 20_000)
@@ -184,7 +196,7 @@ fun main() {
     stress.stop().forEach { accounted += it.segment.key }
     check(accounted.size == 1_000)
 
-    val contextQueue = TranslationQueue("one", contextCharacters = 4)
+    val contextQueue = TranslationQueue("one", capacity = 2, contextCharacters = 4)
     contextQueue.submit(Segment(SegmentKey("one", 0), "Long source 😀", 0, 1), 1)
     contextQueue.submit(segment(1), 150)
     contextQueue.take()?.let { contextQueue.complete(it.segment.key, "ok", 100) }

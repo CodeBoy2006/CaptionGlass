@@ -33,7 +33,7 @@ flowchart TD
     buffer --> asr[单 ASR 工作线程 / 单流]
     asr --> gate[SourceGate]
     gate --> source[稳定与临时原文]
-    gate --> queue[TranslationQueue / 3 等待 + 1 active]
+    gate --> queue[TranslationQueue / 1 等待 + 1 active]
     queue --> mt[单 MT 工作线程]
     queue --> outcome[未翻译原因]
     mt --> outcome
@@ -74,9 +74,11 @@ sherpa 内部有状态 `LinearResample` 将 48 kHz 输入转换到 16 kHz 特征
 
 ### 3.4 队列、上下文与完整性
 
-MT 默认 3 个等待槽和 1 个 active，确认后最多等待 8 秒。请求单独记录提交时的会话单调时间；队列过期、完成验收与 native deadline 使用同一起点，音频样本结束时间只用于字幕记录，识别耗时不挤占新请求的翻译预算。上下文最多 4 个已确认原文片段、512 字符；native tokenizer 再限制历史最多 256 tokens，总输入加输出不超过 2,048 tokens。整段译文最多 256 输出 tokens，未遇 EOG 就用尽预算属于失败，不显示截断译文。
+MT 默认 1 个等待槽和 1 个 active，确认后总预算仍为 8 秒，包含排队与推理。等待槽满时，新片段替换尚未开始的旧片段，旧片段得到明确的 `BACKLOG`，不取消正在执行的翻译来追赶新输入。这样避免持续过载时始终派发剩余预算不足的旧任务，但不能保证超过设备持续能力的输入全部翻译。请求记录提交时的会话单调时间；队列过期、完成验收与 native deadline 使用同一起点，音频样本结束时间只用于字幕记录。可选背景仅保留最近一个完整已确认原文片段，最多 512 字符；native 分词后超过 64 tokens 就整段省略，绝不截取背景的半句。当前待译原文保持完整，总输入加输出不超过 2,048 tokens。整段译文最多 256 输出 tokens，未遇 EOG 就用尽预算属于失败，不显示截断译文。
 
-同一个 MT 协程在完成后直接处理下一条未过期任务。JNI 在原有 MT worker 上每约 120 ms 回调累计 UTF-8；不完整字符和 Murasaki 思考标签不发布。Main owner 按完整 SegmentKey、active call 与终态检查更新预览；取消、超时、修订后的迟到增量被忽略。失败后的已有预览保留但标为未完成，不能当作成功译文。译文完成时原位更新对应行。native 在成功或异常返回前统一清零 KV，不在下一次入口重复清零；没有跨请求缓存复用。
+同一个 MT 协程在完成后直接处理下一条未过期任务。JNI 在原有 MT worker 上每约 120 ms 回调累计 UTF-8；不完整字符和 Murasaki 思考标签不发布。Main owner 按完整 SegmentKey、active call 与终态检查更新预览；取消、超时、修订后的迟到增量被忽略。失败后的已有预览保留但标为未完成，不能当作成功译文。译文完成时原位更新对应行。模型准备阶段预计算 APK 固定提示前缀，使用加载预算而不占第一句的 8 秒预算；准备时间相应增加。成功、正常取消或超时后只保留已经准备好的固定前缀 KV，移除背景、当前原文及输出对应的序列位置；下次只复用 token 完全一致的前缀，至少重新解码一个输入 token 以获取正确 logits。其他推理异常清空全部缓存；清理失败使 context 不再可用。模型释放时一并释放，没有跨会话缓存。
+
+Vulkan 清理失败通过 `TranslationUnavailableException` 传给会话 owner；当前任务先结算终态，再以“翻译中断”停止会话、停止 AudioRecord 并等待 worker 释放。不会继续向不可用的 context 派发请求。首页未翻译计数包含积压、超时和失败。`CaptionGlassMT`／`CaptionGlassNative` 日志只记录会话和片段身份、排队、首个可见预览、首 token、预填充、总耗时、token 数及失败类型，不记录语音文字。播放捕获每 10 秒抽样系统热状态和 headroom；API 不支持时保留 NaN，不据此猜测温度或自动切换模型。
 
 终态为译文或 `BACKLOG / FAILED / TIMED_OUT / STOPPED / SUPERSEDED`。溢出、超时、停止返回值均被消费，确认计数与终态计数可核对。所有状态在提交时建立的原位置更新，不因完成顺序改变片段顺序。内存记录按 sequence 排序，只保留最近 200 条；计数覆盖整个会话。持久记录属于 M2。
 
@@ -106,7 +108,7 @@ MT 默认 3 个等待槽和 1 个 active，确认后最多等待 8 秒。请求�
 
 sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan 后端静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。显式选择 Vulkan 设备，不支持 Vulkan 1.2、算子／分配失败时沿现有加载失败或未翻译路径反馈；不静默切回纯 CPU 翻译。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
 
-`TranslationFormat` 按固定型号生成提示：Hy-MT2 保留原采样；StreamRevise 使用作者的首段／原文历史格式与 greedy；MiLMMT 使用源、目标全名的裸 completion，不加 BOS 或聊天模板；Murasaki 使用已检查 GGUF 的 Qwen3 ChatML、官方 short 系统提示和关闭思考的后缀。后三者 greedy。角色控制符与可信系统提示单独分词，语音与历史始终 `parse_special=false`。空译文、未正常结束和未闭合思考均进入明确失败终态。JNI 用 UTF-8 byte arrays，不用 modified UTF-8 传中文。各来源、精确型号及验收范围见 [模型支持表](model-support.md)。
+`TranslationFormat` 按固定型号生成提示：Hy-MT2 保留原提示顺序与采样，背景仍位于翻译指令之前，仅复用两个固定角色 tokens。StreamRevise 使用作者的首段／原文历史格式与 greedy；MiLMMT 使用源、目标全名的裸 completion，不加 BOS 或聊天模板；Murasaki 使用已检查 GGUF 的 Qwen3 ChatML、简短的“仅输出完整译文”提示、已闭合思考块和 `译文：` 答案起始。Murasaki 的 greedy sampler 用现有 logit bias 屏蔽两个思考控制 token，避免在译文后继续分析；仍须正常 EOG 才成功，不因标点、换行或输出上限提前截断。角色控制符与可信系统提示单独分词，语音与历史始终 `parse_special=false`。空译文、未正常结束和未闭合思考均进入明确失败终态。JNI 用 UTF-8 byte arrays，不用 modified UTF-8 传中文。各来源、精确型号及验收范围见 [模型支持表](model-support.md)。
 
 选型依据：PengChengStarling 提供真正的八语种流式 Transducer，sherpa 项目已有对应的 matched int8 文件与导出脚本，可复用 OnlineRecognizer 及现有音频缓冲、端点、停止逻辑。PengChengStarling 采用固定运行库的通用解码接口；对该模型，源语言选择用于能力匹配和分句，并不强制声学语言识别。上游定制服务另有 langtag 初始化接口，固定 sherpa Zipformer Kotlin 接口未提供该能力。本次不手改预编译 JNI 或偷偷变更权重。合成日语对照中 beam 比 greedy 保留更多内容，但仍有错误和漏词，详见验收记录。[上游模型卡](https://huggingface.co/stdo/PengChengStarling)、[sherpa 转换文件](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10)、[上游部署与 langtag 说明](https://github.com/PCL-Voice/PengChengStarling)
 

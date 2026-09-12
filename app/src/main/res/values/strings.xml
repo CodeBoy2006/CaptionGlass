@@ -31,6 +31,7 @@
     <string name="status_capture_interrupted">音频捕获中断</string>
     <string name="status_overrun">识别跟不上播放</string>
     <string name="status_recognition_failed">识别中断</string>
+    <string name="status_translation_failed">翻译中断</string>
     <string name="status_start_failed">无法启动字幕</string>
     <string name="hint_silent">确认正在播放 · 部分应用禁止捕获</string>
     <string name="hint_restart">重新开启即可继续</string>

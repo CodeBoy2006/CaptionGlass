@@ -56,6 +56,7 @@ internal val CaptureStatus.label: Int
         CaptureStatus.CAPTURE_INTERRUPTED -> R.string.status_capture_interrupted
         CaptureStatus.OVERRUN -> R.string.status_overrun
         CaptureStatus.RECOGNITION_FAILED -> R.string.status_recognition_failed
+        CaptureStatus.TRANSLATION_FAILED -> R.string.status_translation_failed
         CaptureStatus.START_FAILED -> R.string.status_start_failed
     }
 
@@ -73,7 +74,7 @@ internal val CaptureStatus.icon: Int
         CaptureStatus.AUDIO_UNSUPPORTED -> R.drawable.ic_music_off
         CaptureStatus.CAPTURE_INTERRUPTED -> R.drawable.ic_link_off
         CaptureStatus.OVERRUN -> R.drawable.ic_speed
-        CaptureStatus.RECOGNITION_FAILED -> R.drawable.ic_sync_problem
+        CaptureStatus.RECOGNITION_FAILED, CaptureStatus.TRANSLATION_FAILED -> R.drawable.ic_sync_problem
         CaptureStatus.START_FAILED -> R.drawable.ic_error
     }
 
@@ -81,7 +82,7 @@ internal val CaptureStatus.hint: Int?
     get() = when (this) {
         CaptureStatus.SILENT -> R.string.hint_silent
         CaptureStatus.CONSENT_ENDED, CaptureStatus.PERMISSION_LOST, CaptureStatus.CAPTURE_INTERRUPTED,
-        CaptureStatus.RECOGNITION_FAILED -> R.string.hint_restart
+        CaptureStatus.RECOGNITION_FAILED, CaptureStatus.TRANSLATION_FAILED -> R.string.hint_restart
         CaptureStatus.PACK_INVALID -> R.string.hint_reimport
         CaptureStatus.LOAD_FAILED -> R.string.hint_model_load
         CaptureStatus.OVERRUN -> R.string.hint_overrun

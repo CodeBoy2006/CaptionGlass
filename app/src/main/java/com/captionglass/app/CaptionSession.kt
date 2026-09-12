@@ -1,6 +1,7 @@
 package com.captionglass.app
 
 import android.os.SystemClock
+import android.util.Log
 import com.captionglass.engine.*
 import com.captionglass.nativebridge.*
 import kotlinx.coroutines.*
@@ -13,7 +14,7 @@ import java.util.concurrent.Executors
 enum class CaptureStatus {
     IDLE, PREPARING, WAITING, HEARING, SILENT,
     STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED,
-    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, START_FAILED,
+    AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, TRANSLATION_FAILED, START_FAILED,
 }
 
 /** A stop cause the UI can explain without parsing exception text. */
@@ -138,10 +139,13 @@ internal class CaptionSession(
 
     private fun outcome(caption: Caption) {
         feed.complete(caption)
+        Log.i("CaptionGlassMT", "session=$id sequence=${caption.segment.key.sequence} revision=${caption.segment.key.revision} " +
+            "result=${caption.untranslatedReason ?: "TRANSLATED"}")
         // ponytail: last 200 terminal outcomes in memory; durable history/export belongs to M2.
         update { copy(history = (history + caption).sortedBy { it.segment.key.sequence }.takeLast(200), outcomes = outcomes + 1,
             lines = feed.lines,
-            translationBacklog = translationBacklog + if (caption.untranslatedReason == UntranslatedReason.BACKLOG) 1 else 0) }
+            translationBacklog = translationBacklog + if (caption.untranslatedReason in listOf(
+                UntranslatedReason.BACKLOG, UntranslatedReason.TIMED_OUT, UntranslatedReason.FAILED)) 1 else 0) }
     }
 
     private fun pump() {
@@ -151,17 +155,31 @@ internal class CaptionSession(
             while (!stopped) {
                 queue.expire(now()).forEach(::outcome)
                 val request = queue.take() ?: break
-                val call = NativeCall((8_000 - (now() - request.submittedAtMs)).coerceAtLeast(1))
+                val started = now()
+                val waited = started - request.submittedAtMs
+                val call = NativeCall((8_000 - waited).coerceAtLeast(1))
                 activeCall = call
+                var unavailable = false
+                var firstPreviewMs = -1L
                 val translated = try {
                     withContext(mtWorker) { checkNotNull(translator).translate(request.segment.source, request.context, selection.languages, call,
                         onProgress = { text -> scope.launch {
                             if (!stopped && activeCall === call && queue.cancelledActiveKey != request.segment.key &&
-                                feed.progress(request.segment.key, text)) update { copy(lines = feed.lines) }
+                                feed.progress(request.segment.key, text)) {
+                                if (firstPreviewMs < 0 && text.isNotBlank()) firstPreviewMs = now() - started
+                                update { copy(lines = feed.lines) }
+                            }
                         } }) }
-                } catch (_: Exception) { null }
+                } catch (e: Exception) {
+                    unavailable = e is TranslationUnavailableException
+                    Log.w("CaptionGlassMT", "session=$id sequence=${request.segment.key.sequence} error=${e.javaClass.simpleName}")
+                    null
+                }
                 finally { call.close(); activeCall = null }
+                Log.i("CaptionGlassMT", "session=$id sequence=${request.segment.key.sequence} queue_ms=$waited " +
+                    "first_preview_ms=$firstPreviewMs run_ms=${now() - started}")
                 queue.complete(request.segment.key, translated, now())?.let(::outcome)
+                if (unavailable) stop(CaptureStatus.TRANSLATION_FAILED)
             }
         }
     }

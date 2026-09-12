@@ -20,23 +20,36 @@ class DeviceChecks : Instrumentation() {
     private var mode = "all"
     private var requestedModel: String? = null
     private var requestedTranslator: String? = null
+    private var repetitions = 4
     private val translation get() = catalog.translator(ModelSelection())
     private val catalog by lazy { ModelCatalog(targetContext) }
     private val baseline get() = catalog.recognizer(ModelSelection())
     private val multilingual get() = catalog.recognizers.single { it.id == "pengcheng-8lang-int8" }
     private val nemotron get() = catalog.recognizers.single { it.id == "nemotron-3.5-560ms-int8" }
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); mode = arguments?.getString("mode") ?: "all"; requestedModel = arguments?.getString("model"); requestedTranslator = arguments?.getString("mt"); start() }
+    override fun onCreate(arguments: Bundle?) {
+        super.onCreate(arguments)
+        mode = arguments?.getString("mode") ?: "all"
+        requestedModel = arguments?.getString("model"); requestedTranslator = arguments?.getString("mt")
+        repetitions = (arguments?.getString("repetitions")?.toInt() ?: 4).also { require(it in 4..512) }
+        start()
+    }
     private fun report(text: String) { sendStatus(0, Bundle().apply { putString("stream", "$text\n") }) }
     override fun onStart() {
         val activity = startActivitySync(Intent(targetContext, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity", "mt-profile"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: catalog\n") }); return
+            }
+            if (mode == "mt-profile") {
+                val model = catalog.models.single { it.id == requestedModel && it.kind == "mt" }
+                ModelPack.verify(targetContext, model)
+                runBlocking { translationProfile(model) }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: mt-profile\n") }); return
             }
             if (mode in listOf("models", "model-network")) {
                 runBlocking { modelManagerChecks(mode == "model-network") }
@@ -44,17 +57,18 @@ class DeviceChecks : Instrumentation() {
             }
             if (mode in listOf("pipeline-model", "continuity")) {
                 val model = catalog.models.single { it.id == requestedModel }
-                val source = if (mode == "continuity" && Language.EN in model.languages) Language.EN else Language.JA
+                val mt = catalog.models.single { it.id == (requestedTranslator ?: ModelSelection().translatorId) }
+                val source = if (mode == "continuity" && Language.EN in model.languages && Language.EN in mt.languages) Language.EN else Language.JA
                 val selected = ModelSelection(LanguagePair(source, Language.ZH), model.id,
-                    requestedTranslator ?: ModelSelection().translatorId)
+                    mt.id)
                 check(catalog.valid(selected))
                 catalog.required(selected).forEach { ModelPack.verify(targetContext, it) }
                 runBlocking {
                     replay(source.code, Language.ZH, recognizerId = selected.recognizerId, translatorId = selected.translatorId,
-                        repetitions = if (mode == "continuity") 4 else 1)
+                        repetitions = if (mode == "continuity") repetitions else 1)
                     replay(source.code, Language.ZH, stopAtMs = if (mode == "continuity") 24_000 else 4500,
                         recognizerId = selected.recognizerId, translatorId = selected.translatorId,
-                        repetitions = if (mode == "continuity") 4 else 1)
+                        repetitions = if (mode == "continuity") repetitions else 1)
                 }
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: $mode\n") }); return
             }
@@ -72,6 +86,34 @@ class DeviceChecks : Instrumentation() {
                                     val text = mt.translate("今日はいい天気です。", emptyList(), LanguagePair(Language.JA, Language.ZH), call)
                                     check(text.any { it in '\u4e00'..'\u9fff' })
                                     report("MT ${model.id}: $text ${mt.timings()}")
+                                }
+                                prefixCacheCheck(mt, model.translationFormat)
+                                if (model.translationFormat == TranslationFormat.MURASAKI) {
+                                    var failures = 0
+                                    for (source in listOf("今日はいい天気です", "今日はいい天気です。",
+                                        "今日はいい天気です公園を散歩しましょうこのアプリは日本語の音声を翻訳します。",
+                                        "この薬は飲んではいけません", "明日は公園に行きません",
+                                        "会議は午後三時に始まります", "田中さんはまだ来ていません",
+                                        "公園を散歩しましょう。", "公園を散歩しましょう",
+                                        "今日はいい天気です公園を散歩しましょうこのアプリは日本語の音声を翻訳します今日はいい天気ですを散歩しましょうこのアプリは日本語の音声を翻訳します。")) {
+                                        var partial = ""
+                                        NativeCall(8_000).use { call ->
+                                            val result = runCatching {
+                                                mt.translate(source, emptyList(), LanguagePair(Language.JA, Language.ZH), call,
+                                                    maxTokens = 64, onProgress = { partial = it }).also { text ->
+                                                    check(text.any { it in '\u4e00'..'\u9fff' } && !text.startsWith("["))
+                                                    if ("ません" in source) check(Regex("不|没|未|勿|禁止|别").containsMatchIn(text))
+                                                    if ("三時" in source) check(Regex("三|3").containsMatchIn(text))
+                                                    if ("田中" in source) check("田中" in text)
+                                                    if (Regex("天気").findAll(source).count() == 2)
+                                                        check(Regex("天气").findAll(text).count() == 2) { "Repeated source was compressed: $text" }
+                                                }
+                                            }
+                                            report("ASR EDGE source=$source result=${result.getOrNull()} error=${result.exceptionOrNull()?.message} partial=$partial ${mt.timings()}")
+                                            if (result.isFailure) failures++
+                                        }
+                                    }
+                                    check(failures == 0) { "Murasaki failed $failures ASR-shaped inputs" }
                                 }
                             }
                         }
@@ -139,6 +181,64 @@ class DeviceChecks : Instrumentation() {
         } finally {
             runOnMainSync { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
+    }
+    /** Fixed native workload for before/after latency comparisons, not a speech-quality benchmark. */
+    private suspend fun translationProfile(model: ModelSpec) = withContext(Dispatchers.Default) {
+        val sources = listOf("今日はいい天気です。", "明日は公園に行きません。", "会議は午後三時に始まります。", "このアプリは音声を翻訳します。")
+        val history = mutableListOf<String>()
+        val power = targetContext.getSystemService(android.os.PowerManager::class.java)
+        val began = SystemClock.elapsedRealtime()
+        NativeCall(120_000).use { load ->
+            LocalTranslator(model.file(targetContext, "model"), model.translationFormat, load).use { mt ->
+                report("PREPARE model=${model.id} ready_ms=${SystemClock.elapsedRealtime() - began}")
+                repeat(12) { index ->
+                    NativeCall(30_000).use { call ->
+                        val started = SystemClock.elapsedRealtime()
+                        var first = -1L
+                        val source = sources[index % sources.size]
+                        val text = mt.translate(source, history.takeLast(4), LanguagePair(Language.JA, Language.ZH), call,
+                            onProgress = { if (first < 0 && it.isNotBlank()) first = SystemClock.elapsedRealtime() - started })
+                        check(text.any { it in '\u4e00'..'\u9fff' } && first >= 0)
+                        report("PROFILE model=${model.id} index=$index first_ms=$first total_ms=${SystemClock.elapsedRealtime() - started} thermal=${power.currentThermalStatus} ${mt.timings()}: $text")
+                        check(when (index % sources.size) {
+                            0 -> "天气" in text && "音" !in text
+                            1 -> "公园" in text && "天气" !in text && Regex("不|没|未").containsMatchIn(text)
+                            2 -> "会" in text && "公园" !in text && Regex("三|3").containsMatchIn(text)
+                            else -> "音" in text && "会" !in text
+                        }) { "Profile translated background or lost source information: $source => $text" }
+                        history += source
+                    }
+                }
+            }
+        }
+    }
+
+    private fun prefixCacheCheck(mt: LocalTranslator, format: TranslationFormat) {
+        val pair = LanguagePair(Language.JA, Language.ZH)
+        fun metric(name: String) = Regex("(?:^| )$name=([^ ]+)").find(mt.timings())!!.groupValues[1].toDouble()
+        fun translated(source: String): String = NativeCall(30_000).use { mt.translate(source, emptyList(), pair, it) }
+        val first = translated("今日はいい天気です。")
+        check(translated("今日はいい天気です。") == first)
+        val prefixSize = metric("cached_tokens")
+        if (format != TranslationFormat.MILMMT) check(prefixSize > 0)
+        translated("明日は公園に行きません。")
+        check(translated("今日はいい天気です。") == first) { "Earlier source or generated text contaminated the retained prefix" }
+        NativeCall(30_000).use { call ->
+            var previewed = false
+            check(runCatching { mt.translate("今日はいい天気です。", emptyList(), pair, call, onProgress = {
+                if (it.isNotBlank()) { previewed = true; call.cancel() }
+            }) }.isFailure)
+            check(previewed)
+        }
+        check(translated("今日はいい天気です。") == first)
+        check(metric("cached_tokens") == prefixSize) { "Normal cancellation discarded the prepared fixed prefix" }
+        NativeCall(30_000).use { call ->
+            check(runCatching { mt.translate("今日はいい天気です。", emptyList(), pair, call, maxTokens = 1) }.isFailure)
+        }
+        check(translated("今日はいい天気です。") == first)
+        check(metric("cached_tokens") == 0.0) { "Failed call retained a reusable prefix" }
+        check(translated("今日はいい天気です。") == first && metric("cached_tokens") == prefixSize)
+        report("PASS: prefix reuse, unrelated source isolation, cancellation retention and failure cold recovery")
     }
     /** Diagnostic uses the same real-time PCM without SourceGate, MT, or UI state. */
     private suspend fun japaneseAsrCheck(model: ModelSpec) = withContext(Dispatchers.Default) {
@@ -229,6 +329,7 @@ class DeviceChecks : Instrumentation() {
                 check(previews.any { it.isNotBlank() } && previews.all { '\ufffd' !in it && result.startsWith(it) })
                 report("PASS: actual Vulkan translation streamed ${previews.size} UTF-8 previews before completion: $result")
             }
+            prefixCacheCheck(model, translation.translationFormat)
             check(translate("今天天气很好，我们去公园散步。", Language.EN, Language.ZH).contains("park", ignoreCase = true))
             check(translate("今日はいい天気です。", Language.ZH, Language.JA).contains("天气"))
             check(translate("今日はいい天気です。", Language.EN, Language.JA).contains("weather", ignoreCase = true))
@@ -281,6 +382,10 @@ class DeviceChecks : Instrumentation() {
                 check(translated.contains("谢") && !translated.contains("字幕") && !translated.contains("背景")) { "Translated context instead of source: $translated" }
                 report("PASS: short source with background: $translated")
             }
+            NativeCall(30_000).use { call ->
+                model.translate("Thank you.", listOf("Long optional history. ".repeat(100)), LanguagePair(Language.EN, Language.ZH), call)
+                check("history_tokens=0 " in model.timings()) { "Oversized history was sliced rather than omitted" }
+            }
             report("PASS: pre-dispatch/active cancellation, deadline, output budget, reuse after abort")
         } finally { model.close() }
     }
@@ -303,7 +408,7 @@ class DeviceChecks : Instrumentation() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val overlay = SubtitleOverlay(targetContext)
         var latest = CaptureState()
-        val reported = mutableSetOf<Long>()
+        val reported = linkedMapOf<Long, com.captionglass.engine.Caption>()
         var firstSource = 0L
         var firstTranslation = 0L
         var began = 0L
@@ -318,7 +423,7 @@ class DeviceChecks : Instrumentation() {
             latest = state
             if (firstSource == 0L && (state.stable.isNotBlank() || state.provisional.isNotBlank() || state.lines.isNotEmpty())) firstSource = SystemClock.elapsedRealtime() - began
             state.history.forEach { caption ->
-                if (reported.add(caption.segment.key.sequence)) {
+                if (reported.put(caption.segment.key.sequence, caption) == null) {
                     if (caption.translation != null && firstTranslation == 0L) firstTranslation = SystemClock.elapsedRealtime() - began
                     report("REPLAY $name end_ms=${caption.segment.endMs} result_ms=${SystemClock.elapsedRealtime() - began}: ${caption.segment.source} => ${caption.translation ?: caption.untranslatedReason}")
                 }
@@ -334,12 +439,20 @@ class DeviceChecks : Instrumentation() {
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
             began = SystemClock.elapsedRealtime()
             var position = 0
+            var lastThermalReport = 0L
+            val power = targetContext.getSystemService(android.os.PowerManager::class.java)
             while (position < samples.size) {
                 val end = minOf(position + 1600, samples.size)
                 val due = began + end * 1000L / 16000
                 delay((due - SystemClock.elapsedRealtime()).coerceAtLeast(0))
                 check(session.offer(PcmFrame(samples.copyOfRange(position, end), 16000, end * 1000L / 16000)))
                 position = end
+                val now = SystemClock.elapsedRealtime()
+                if (mode == "continuity" && now - lastThermalReport >= 10_000) {
+                    lastThermalReport = now
+                    val headroom = if (android.os.Build.VERSION.SDK_INT >= 30) power.getThermalHeadroom(0) else Float.NaN
+                    report("THERMAL elapsed_ms=${now - began} status=${power.currentThermalStatus} headroom=$headroom confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
+                }
                 if (stopAtMs != null && end * 1000L / 16000 >= stopAtMs) {
                     stopping = true
                     session.stop()
@@ -351,15 +464,16 @@ class DeviceChecks : Instrumentation() {
             check(latest.status in listOf(CaptureStatus.ENDED, CaptureStatus.STOPPED)) { "Unexpected stop: ${latest.status}" }
             if (stopAtMs == null) check(latest.history.any { it.translation != null }) { "No successful translation: ${latest.history}" }
             else check(latest.history.any { it.untranslatedReason == com.captionglass.engine.UntranslatedReason.STOPPED })
-            val source = latest.history.filter { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED }
+            val source = reported.values.filter { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED }
                 .joinToString(" ") { it.segment.source }
+            report("REPLAY $name stop_at_ms=$stopAtMs audio_ms=${position * 1000L / 16000} elapsed_ms=${SystemClock.elapsedRealtime() - began} first_source_ms=$firstSource first_translation_ms=$firstTranslation confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
+            report("OUTCOMES ${reported.values.groupingBy { it.untranslatedReason?.name ?: "TRANSLATED" }.eachCount()}")
             if (mode == "continuity" && stopAtMs == null) {
                 val anchor = if (name == "ja") "天気" else "good subtitles"
                 val count = Regex(anchor, RegexOption.IGNORE_CASE).findAll(source).count()
                 check(count == repetitions) { "Repeated speech coverage $count/$repetitions: $source" }
             }
             check(when (name) { "zh" -> source.contains("公园"); "ja" -> source.contains("天気"); else -> source.contains("subtitles", ignoreCase = true) }) { "Unexpected ASR: $source" }
-            report("REPLAY $name stop_at_ms=$stopAtMs audio_ms=${position * 1000L / 16000} elapsed_ms=${SystemClock.elapsedRealtime() - began} first_source_ms=$firstSource first_translation_ms=$firstTranslation confirmed=${latest.confirmed} outcomes=${latest.outcomes}")
             if (mode == "reading") {
                 check(latest.lines.size == latest.history.count { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED })
                 readingViewportCheck(overlay.captions, latest)

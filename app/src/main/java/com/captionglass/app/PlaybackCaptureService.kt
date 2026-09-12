@@ -11,6 +11,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.provider.Settings
+import android.util.Log
 import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
 import kotlinx.coroutines.*
@@ -64,6 +65,8 @@ class PlaybackCaptureService : Service() {
             val pipeline = CaptionSession(scope, selection) {
                 mutableState.value = it
                 view.render(it)
+                // A worker failure must also unblock AudioRecord; closing PCM alone is insufficient.
+                if (it.stopping) requestStop(it.status)
             }
             session = pipeline
             scope.launch {
@@ -146,6 +149,8 @@ class PlaybackCaptureService : Service() {
         val beganAt = SystemClock.elapsedRealtime()
         var lastSignal = 0L
         var lastReport = 0L
+        var lastThermalReport = 0L
+        val power = getSystemService(PowerManager::class.java)
         val main = Handler(Looper.getMainLooper())
         try {
             while (!stopping) {
@@ -161,6 +166,11 @@ class PlaybackCaptureService : Service() {
                 val level = ((10 * kotlin.math.log10(energy / count + 1e-10) + 50) / 40).toFloat()
                 main.post { overlay?.level(level) }
                 val now = SystemClock.elapsedRealtime()
+                if (now - lastThermalReport >= 10_000) {
+                    lastThermalReport = now
+                    val headroom = if (Build.VERSION.SDK_INT >= 30) power.getThermalHeadroom(0) else Float.NaN
+                    Log.i("CaptionGlassMT", "thermal=${power.currentThermalStatus} headroom=$headroom")
+                }
                 if ((0 until count).any { kotlin.math.abs(buffer[it].toInt()) > 64 }) lastSignal = now
                 if (now - lastReport >= 1000) {
                     lastReport = now

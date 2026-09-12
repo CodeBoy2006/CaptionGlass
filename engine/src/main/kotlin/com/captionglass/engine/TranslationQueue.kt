@@ -3,7 +3,7 @@ package com.captionglass.engine
 /** Confined to the session owner. At most one native translation may be in flight. */
 class TranslationQueue(
     private val sessionId: String,
-    private val capacity: Int = 3,
+    private val capacity: Int = 1,
     private val maxAgeMs: Long = 8_000,
     private val contextCharacters: Int = 1_024,
 ) {
@@ -12,7 +12,7 @@ class TranslationQueue(
     }
 
     private val pending = ArrayDeque<TranslationRequest>()
-    private val context = ArrayDeque<Segment>()
+    private var context: Segment? = null
     private var active: TranslationRequest? = null
     private var activeReported = false
     private var lastSequence = -1L
@@ -20,19 +20,18 @@ class TranslationQueue(
     val pendingCount: Int get() = pending.size
     val cancelledActiveKey: SegmentKey? get() = active?.segment?.key?.takeIf { activeReported }
 
-    /** A rejected confirmed segment is returned for display/history; it is never silently dropped. */
+    /** Return the displaced waiting segment explicitly; never cancel active work for a newer arrival. */
     fun submit(segment: Segment, nowMs: Long): Caption? {
         require(segment.key.sessionId == sessionId && segment.key.sequence > lastSequence && nowMs >= 0)
         lastSequence = segment.key.sequence
-        val request = TranslationRequest(segment, context.map { it.source }, nowMs)
-        context.addLast(segment)
+        val request = TranslationRequest(segment, listOfNotNull(context?.source), nowMs)
         // Character budget is a pre-tokenization memory bound, not a claimed model token budget.
-        while (context.size > 4 || context.sumOf { it.source.length } > contextCharacters) context.removeFirst()
-        return when {
-            stopped -> Caption(segment, untranslatedReason = UntranslatedReason.STOPPED)
-            pending.size >= capacity -> Caption(segment, untranslatedReason = UntranslatedReason.BACKLOG)
-            else -> { pending.addLast(request); null }
-        }
+        context = segment.takeIf { it.source.length <= contextCharacters }
+        if (stopped) return Caption(segment, untranslatedReason = UntranslatedReason.STOPPED)
+        // Keep live input fresh instead of spending the next call's deadline on an aging backlog.
+        val displaced = if (pending.size >= capacity) pending.removeFirst() else null
+        pending.addLast(request)
+        return displaced?.let { Caption(it.segment, untranslatedReason = UntranslatedReason.BACKLOG) }
     }
 
     fun take(): TranslationRequest? {
@@ -75,7 +74,7 @@ class TranslationQueue(
     }
 
     fun invalidate(keys: Set<SegmentKey>): List<Caption> {
-        context.removeAll { it.key in keys }
+        if (context?.key in keys) context = null
         val outcomes = mutableListOf<Caption>()
         active?.takeIf { !activeReported && it.segment.key in keys }?.let {
             activeReported = true
@@ -101,7 +100,7 @@ class TranslationQueue(
         val remaining = listOfNotNull(active?.takeUnless { activeReported }) + pending.toList()
         activeReported = active != null
         pending.clear()
-        context.clear()
+        context = null
         return remaining.map { Caption(it.segment, untranslatedReason = UntranslatedReason.STOPPED) }
     }
 }

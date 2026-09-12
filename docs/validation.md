@@ -273,6 +273,38 @@ Nemotron 与 MT 加载后 PSS 抽样为 2,316,481–2,521,592 KB，并非峰值�
 
 日志为 ignored `artifacts/reading-native-final.log`、`reading-reading-accepted.log`、`reading-qwen-accepted.log`、`reading-parakeet-accepted.log`、`reading-streaming-accepted.log`；截图在 `artifacts/reading-ui/`。这轮覆盖真实推理的功能和阅读状态，不包含自然语音质量、30–60 分钟热稳态或跨应用持续播放质量验收。
 
+### 2.11 翻译预填充与过载恢复
+
+2026-09-12，在同一 vivo V2415A／天玑 9400 上验证。权重、Vulkan 后端、8-token batch、2,048-token context 和包含排队的 8 秒总预算不变；ASR 仍在 CPU。不能把所有停字归因于热降频：本次分别观察到重复预填充、等待队列挤占预算、Murasaki 在译文后继续分析，以及日语缺标点导致的超长确认片段。
+
+最终等待槽只保留最新一个片段，被替换的旧片段明确结算 `BACKLOG`，不打断 active 来追赶新输入。背景限最近一段完整原文，超过 64 tokens 整段省略。模型准备阶段预计算 APK 固定前缀；成功和正常取消只移除本句位置，其他推理失败清空缓存，清理失败则停止会话并解除 AudioRecord 阻塞。没有加入重试、动态热控框架或自动切换后端。
+
+Hy-MT2 保留已验证的提示顺序和采样，仅复用两个固定角色 tokens。Murasaki 使用简短的“仅输出完整译文”系统提示、已闭合思考块、`译文：` 答案起始，并通过现有 logit-bias sampler 屏蔽两个思考控制 token；仍必须正常 EOG 才成功。Murasaki 的固定前缀从 89 缩短到 33 tokens，原文始终完整，不以标点、换行或输出上限提前截断。
+
+`mt-profile` 对同样四个日语短句连续调用三轮，每组均计入全部 12 次调用。首字指翻译调用到首个非空 UTF-8 文本回调，不含模型准备、ASR、语义等待、排队或屏幕呈现。最终检查同时核对当前源句的主题、否定和数字，拒绝把背景译文当作性能成绩。
+
+| 型号／指标 | 改动前 | 保留版本／最终复验 |
+| --- | --- | --- |
+| Hy-MT2 1.8B 首字中位数 | 1,418.5 ms | 1,405.5 ms；最终复验 912 ms |
+| Hy-MT2 整句中位数／最大值 | 1,705 / 2,370 ms | 1,708 / 1,893 ms；复验 1,151.5 / 1,308 ms |
+| Murasaki v0.3 4B 首字中位数 | 6,091.5 ms | 1,473 ms |
+| Murasaki 整句中位数／最大值 | 6,470 / 6,859 ms | 1,919.5 / 2,159 ms |
+| 最终模型准备 | 未记录可比值 | Hy-MT2 1,341 ms；Murasaki 7,212 ms |
+
+相同的 Hy 保留推理路径两轮耗时差异很大，不能将较快一轮直接解释为稳定提速。系统拒绝读取 GPU 实时频率，温度、DVFS 和文件／shader 缓存没有严格控制；`Thermal Status=0` 也不证明没有降频，未测量每句能耗。Murasaki 的一次性前缀成本移到准备阶段，并未消失；上表不能证明“点击开启到第一条字幕”同比改善。
+
+Hy-MT2 搭配 Nemotron 560 ms CPU ASR，以 `continuity -e repetitions 96` 进行 1× 英语合成语音回放。音频 620,228 ms、总历时 622,188 ms；191 个确认片段全部 `TRANSLATED`，没有超时、积压或推理失败。首次原文／增量译文为 1,453 / 5,488 ms。前 20／后 20 次推理耗时中位数为 1,690 / 2,111 ms，输入片段不完全相同；后期仍有变慢，不能声称消除了降频。随后 24 秒停止检查得到 7/7 个终态：5 条译文、2 个 `STOPPED`。热状态从 NONE 升至 LIGHT，约 8 分钟后 headroom 在 0.90 附近；两次 PSS 抽样为 2,531,879 / 2,726,341 KB，不是峰值或泄漏判定。
+
+Murasaki 的最终约 10 分钟日语回放中，74 个确认片段都有终态：70 条译文、4 个超长片段 `TIMED_OUT`，没有 `BACKLOG` 或运行库 `FAILED`，超时后短句继续恢复。但 ASR 重复内容覆盖只有 74/76，完整 `continuity` 验收明确失败，不能记作全链路通过。热状态不高于 LIGHT，运行中 PSS 单次抽样为 3,801,239 KB。另行完成短回放和停止检查：自然结束 2/2 条译文；4.5 秒停止得到 1/1 个 `STOPPED`，会话约 5.0 秒回收完成。
+
+原始故障输入 `公園を散歩しましょう。` 曾先输出 `去公园散步吧。`，再生成多余的 `</think>` 和 `[Style & Persona]` 分析，现有预览过滤器隐藏了后续内容。固定测试句的原始输出确认了这一机制；临时原始输出探针已移除，生产日志不记录字幕。最终十个输入均在 8 秒内正常结束：覆盖有／无标点天气句、公园句、三句连写、两组重复句、否定、时间和姓名。对应天气句约 1.76 秒、公园句 1.62 秒、三句连写 4.04 秒、两组重复句 6.24 秒；重复原文没有压缩为一组。这组回归不能替代自然语音翻译质量验收。
+
+未保留的对照包括：Murasaki [作者生成参数](https://github.com/soundstarrain/Murasaki-Translator/blob/main/middleware/murasaki_translator/core/engine.py)、`/no_think`、单独预填答案和小幅重复惩罚，均未可靠解决失败；Hy 将翻译指令或输出规则移到背景之前虽变快，却误译或带出背景，因此全部撤回。仅通过最初七个短句的 Murasaki 中间版本也未被当作最终结果。原始失败与被拒绝的速度记录均保留。
+
+JDK 17 的 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` 和 APK 16 KB 对齐通过。原生／adapter 检查覆盖固定前缀跨句隔离、取消后保留固定前缀、输出预算失败后清空重建、多语言、背景隔离、deadline 和 active cancellation。真实 GPU 丢失／清理失败没有注入；异常到服务停止路径经代码复核，不能将 session 回放当作 MediaProjection／AudioRecord 故障实测。与视频、悬浮窗并行的自然语音及 30–60 分钟热稳态仍未验收；日语缺标点造成的语义等待和超长片段仍是已知限制。
+
+证据位于 ignored `artifacts/mt-profile-*-before.log`、`mt-profile-hy-after.log`、`mt-profile-hy-retained-check.log`、`mt-profile-murasaki-final.log`、`mt-retained-summary.json`、`mt-endurance-hy.log`、`mt-endurance-murasaki-mask.log`、`mt-endurance-*-summary.json`、`mt-endurance-native.log`、`mt-murasaki-mask-regression.log`、`mt-murasaki-stop-check.log`、`mt-native-retained-check.log` 和 `mt-final-build.log`。测试文本来自固定合成语音或明确的短句夹具；生产诊断仅记录身份、计数、耗时、热抽样和终态。
+
 ## 3. M2：可持续体验
 
 实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
