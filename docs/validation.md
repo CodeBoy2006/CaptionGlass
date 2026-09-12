@@ -1,32 +1,50 @@
-# 开发顺序与验收
+# 验收与已知限制
+
+本文保留可重复检查和按日期记录的证据。第 2 节包含旧版本行为与历史失败，不代表当前全部功能或性能；最近的连续字幕与翻译检查见 [2.10](#210-连续窗口与流式阅读) 和 [2.11](#211-翻译预填充与过载恢复)。
 
 ## 1. M1 可重复检查
 
 ### 1.1 不依赖模型的构建检查
 
-```sh
-bash scripts/prepare-native.sh
-./gradlew :engine:check :app:assembleDebug :app:lintDebug
-```
+环境准备和 `:engine:check :app:assembleDebug :app:lintDebug` 命令统一见[构建说明](architecture.md#6-构建与开发)。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽及 1,000 个确认片段完整性。连续窗口检查覆盖样本完整、重复语句接缝、500 窗口状态退役与跨窗口修正；阅读检查覆盖流式结果身份、终态、撤回和未完成预览保留。原生滚动和字体重排在设备上检查。
 
-使用 JDK 17、SDK 36、NDK 27.1.12297006、CMake 3.22.1；先设置 `JAVA_HOME` 和 `ANDROID_HOME`。宿主需要 Clang 与 Python 3，准备脚本编译固定的 shaderc 工具及 matched DEPS，以生成 Vulkan shader。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽及 1,000 个确认片段完整性。连续窗口检查覆盖样本完整、重复语句接缝、500 窗口状态退役与跨窗口修正；阅读检查覆盖流式结果身份、终态、撤回和未完成预览保留。原生滚动和字体重排在设备上检查。
-
-CI 获取哈希固定的 native 依赖后运行上述检查。CI 不下载模型，不声称执行了真机推理。M0 的固定文本预览已删除。
+CI 获取哈希固定的 native 依赖后运行上述检查。CI 不下载模型，不声称执行了真机推理。
 
 ### 1.2 真实推理与实时回放
 
 ```sh
 ./gradlew downloadModels
-bash scripts/prepare-fixtures.sh
+./gradlew downloadModels -Pmodel=nemotron-3.5-560ms-int8
+./gradlew downloadModels -Pmodel=pengcheng-8lang-int8
+bash scripts/prepare-fixtures.sh  # macOS say + ffmpeg
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
 bash scripts/device-check.sh <明确选择且解锁的测试设备序列号>
 ```
 
 系统合成语音使用 macOS Daniel / Tingting / Kyoko，文本固定在脚本中；16 kHz 单声道 PCM16，末尾补 1.6 秒静音。文件与日志均在 ignored `artifacts/`，不包含用户媒体或麦克风录音。测试 APK 使用平台 Instrumentation，无额外测试框架。
 
-检查内容：模型目录与语言兼容规则、独立文件路径、四项模型 SHA-256 与同尺寸损坏拒绝；中英日双向及法语／韩语／阿拉伯语目标真实 MT；UTF-8 增量回调、派发前／运行中取消、运行截止时间、输出预算耗尽、取消后复用；Nemotron 与原有模型的英语、中文和日语 1× 实时回放（含日中、日英、英日）；处理中停止、结果完整性和再次开启；48 kHz 状态重采样与无外部补静音时的最后一个词。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。阅读和长语音可独立运行 `mode reading`、`mode continuity`，命令见 README。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；开发日志中的设备名、卸载层数和耗时才是 GPU 实际参与的证据。
+基础脚本安装两个调试 APK，向应用私有目录部署约 2.77 GB 的四套模型与中英日夹具。检查覆盖目录与语言兼容、哈希与损坏拒绝、多目标 MT、增量回调、取消与截止时间、输出预算、1× 回放、停止再开、48 kHz 重采样及尾部冲刷。断言失败输出 `FAIL`，脚本只接受 `PASS: all`。需要支持 Vulkan 1.2 及所需计算能力的 arm64 GPU；日志中的设备名、卸载层数和耗时才是 GPU 参与证据。
 
-模型管理可单独执行 `mode models`，使用独立小文件目录覆盖安装、取消、校验失效、恢复和删除；`mode model-network` 再增加实际 HTTPS 下载与 HTTP 错误检查，命令见 README，不需要部署推理权重。
+#### 1.2.1 独立检查
+
+以下均使用已安装的测试 APK。`models` 与 `model-network` 仅操作独立的 `manager-check` 目录，无需推理权重；前者检查安装、取消、校验、恢复和删除，后者增加实际 HTTPS 下载及 HTTP 错误。
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode models com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode model-network com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
+
+单型号检查先把 `artifacts/models/<ID>` 的平铺文件部署到应用私有 `files/models/<ID>`，并部署语音夹具。阅读检查还需允许悬浮窗；连续检查需部署命令指定的识别和翻译模型。
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode adapter -e model japanese-zipformer-base-fp16 com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode reading com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode continuity -e model qwen3-asr-0.6b-int8 -e mt hy-mt2-streamrevise-v4-q4-k-m com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
+
+`reading` 使用真实英译中输出检查回看、恢复跟随、无障碍滚动和 30 秒保留。`continuity` 默认将固定语音重复四次，以 1× 速度检查自然结束与 24 秒提前停止；可加 `-e repetitions 260` 做长回放。时间为状态发布时间，不能当作屏幕物理呈现或自然语音质量。
+
+翻译成本对照使用 `-e mode mt-profile -e model <翻译型号 ID>`，同样四个日语短句连续调用 12 次，报告准备、首字、总耗时与 token 数。`adapter` 和 `native` 还检查固定前缀复用、跨句隔离、取消与失败后的恢复。开发诊断可用 `adb logcat -s CaptionGlassMT CaptionGlassNative`，不记录字幕内容。重复合成语音与短句成本不能替代视频并行的自然语音验收。
 
 模型已部署后，可在独立 Instrumentation 进程运行缺少 GPU 的回归检查；它在 native 注册前禁用 Vulkan，并断言明确报错而非改用纯 CPU：
 
@@ -322,7 +340,7 @@ JDK 17 的 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAn
 | 阅读稳定 | 修订、滚动锚点、字号重排、回到底部跟随 | 人工检查与计数 |
 | 资源 | 峰值 PSS、热状态、电量、冷/热启动 | 8 GB 机 PSS 初始预算 2.5–3 GB |
 
-这些数字是目标，不是已达标声明。原始音频默认不保存；质量数据集需明确授权并放在 Git 外，生产诊断不记录识别文本。
+这些数字是目标，不是已达标声明。英语片段以 2–4 秒、最长等待约 5–6 秒起测，日语需独立校准；不按内存容量猜测持续性能。原始音频默认不保存；质量数据集需明确授权并放在 Git 外，生产诊断不记录识别文本。
 
 ## 4. M3：经验证的扩展
 

@@ -1,5 +1,18 @@
 # 架构与开发边界
 
+产品功能与使用流程见 [README](../README.md)，本文维护实现约束与开发环境；实测结果集中在[验收记录](validation.md)。
+
+## 产品约束
+
+服务于外语课程、技术分享与长视频观看，优先保证可读性、内容完整性和持续性能。阅读体验是待验证的差异化假设，不声称优于竞品。
+
+- 首页以语言、字幕和运行状态表达能力，不向普通用户暴露量化、后端或线程参数；使用系统字体并支持缩放。
+- 回看只改变阅读位置，暂停停止处理，停止结束会话，三者不得共用含糊状态；暂停尚未实现。无法控制任意播放器或获取其时间轴，未来导出使用采集会话时间。
+- 不以切断否定、数字或专名来换取延迟，不用摘要替代完整字幕；确认片段必须有译文或明确未译结果。
+- 不申请通知读取、无障碍、账号、屏幕图像访问或媒体控制权限补足核心流程。仅用户主动下载模型时联网，模型包只含数据，运行库随 APK 提供。
+- 当前不做双 ASR 复核、降噪／声源分离、OCR、RAG、模型市场、云端兜底或完整播放器。后续可评估用户主动导入媒体的可控播放模式。
+- 应用 ID 当前为 `com.captionglass.app`，正式分发前确认。未实现功能不接入成功占位；语言包开放依据准确性、完整性、阅读与持续功耗的共同验收，不以模型卡或短时吞吐替代。
+
 ## 1. 三种不同的时间尺度
 
 识别假设可以修订，翻译需要完整语义，阅读需要稳定停留。`SourceGate` 分开管理原文稳定与语义提交，`TranslationQueue` 管理串行推理，`CaptionFeed` 保留按序的双语片段。译文通过节流的增量回调更新对应片段，正常结束后才成为已完成译文。
@@ -17,11 +30,11 @@ flowchart LR
 
 | 模块 | M1 实现 |
 | --- | --- |
-| `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、离线语言包导入 |
+| `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、模型下载与 SAF 导入 |
 | `engine` | 原文稳定/提交/修订、单工作器队列、有界双语记录、确定性回归检查 |
 | `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp Vulkan C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
-`engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。M0 固定文本预览已移除。
+`engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。
 
 ## 3. 数据流与所有权
 
@@ -142,4 +155,37 @@ Qwen3-ASR 和 Parakeet 复用固定 sherpa OfflineRecognizer；Japanese Zipforme
 
 ## 5. 后续工作
 
-暂停、Room 与文字保留选择、TXT/SRT/VTT、相关术语、跨进程下载恢复、30–60 分钟热稳态、多设备画像尚未实现。已知 ASR 错词与延迟目标差距必须保留在验收记录。日语等新语种的持续性能、STQ 或加速后端均须独立验证，不能把短样本吞吐当作持续体验达标。详见 [验收计划](validation.md)。
+当前为 M1 单路字幕闭环与多模型实验扩展；M0 骨架已完成。M2 的持久记录、导出与持续性能，以及 M3 的经验证语言／设备扩展，统一在[验收计划](validation.md#3-m2可持续体验)维护。已知错词、漏句与延迟差距必须保留，不能把短样本吞吐当作持续体验达标。
+
+## 6. 构建与开发
+
+### 环境
+
+使用 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主 Clang（macOS Command Line Tools／Linux clang）和 Python 3。固定版本见 `gradle/libs.versions.toml` 与 Gradle wrapper；当前仅打包 arm64-v8a，最低 API 29，compile/target API 36。
+
+先设置 `JAVA_HOME` 和 `ANDROID_HOME`。macOS 的 Homebrew JDK 与默认 SDK 路径可用：
+
+```sh
+export JAVA_HOME="$(brew --prefix openjdk@17)"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+```
+
+也可用不入库的 `local.properties` 配置 SDK。以下命令均从仓库根目录执行：
+
+```sh
+sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+bash scripts/prepare-native.sh
+./gradlew :engine:check :app:assembleDebug :app:lintDebug
+adb -s <测试设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+首次准备会下载哈希固定的 native 源码、ONNX Runtime 和 Khronos 头文件，编译宿主 shaderc 及匹配依赖，并应用仓库补丁。NDK 自带旧 glslc 不支持所需协作矩阵 shader；宿主工具与 Android 目标工具链分开。sherpa JNI 从固定源码构建，LiteRT 由 Gradle 随 APK 打包。
+
+### 开发检查与资源
+
+模型下载与导入见[模型支持](model-support.md#下载导入与选用)，测试 APK、夹具和真机命令见[验收文档](validation.md#1-m1-可重复检查)。构建与核心检查无需推理权重。
+
+`models/catalog.json` 维护唯一模型清单，`scripts/` 维护依赖准备与设备检查，`third_party/` 维护许可。不要提交 SDK 路径、密钥、权重、音频、APK 或本地 `statusquo.md`。提交前运行上面的三项 Gradle 检查。
+
+品牌图标由内置 imagegen 生成，透明 PNG 同时用于 README、首页与自适应桌面图标；桌面前景留出裁切余量，主题图标使用简化矢量轮廓。原始生成提示见[图标提示词](assets/icon-prompt.txt)。

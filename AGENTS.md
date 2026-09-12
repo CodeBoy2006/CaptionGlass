@@ -1,6 +1,6 @@
 # CaptionGlass development
 
-- Read `PRODUCT.md` and `docs/architecture.md` before changing session behavior. Use real pinned inference: ASR stays on CPU, Hy-MT2 uses Vulkan GPU; never use synthetic text or offline throughput as evidence of live speech quality.
+- Read `README.md` and `docs/architecture.md` before changing session behavior. Use real pinned inference: ASR stays on CPU, Hy-MT2 uses Vulkan GPU; never use synthetic text or offline throughput as evidence of live speech quality.
 - Keep `engine` pure Kotlin/JVM. `app` owns Android lifecycle and UI; `native` owns integrated inference libraries. Prefer platform APIs and these three modules over extra frameworks.
 - One capture owner, one ASR stream, one MT worker. Confine mutable engine state to its session owner. Every async result must match session, segment, and revision.
 - Confirmed segments need a translated or explicit untranslated outcome. Consume queue overflow, expiry, and stop results. Reading overflow and inference overflow are separate events.

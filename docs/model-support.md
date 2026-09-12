@@ -1,11 +1,37 @@
-# 可选模型与证据边界
+# 模型管理与支持
 
 元数据核对日期：2026-09-11。`models/catalog.json` 是唯一下载清单，固定所有文件的 revision、字节数、SHA-256、角色和运行库版本。各型号独立保存；不会因系列合并而一起下载或删除。
+
+## 下载、导入与选用
+
+「设置 → 模型管理」按语音识别、翻译列出系列；进入系列后管理独立型号。每次会话只使用一个 ASR 和一个 MT，停止字幕后才能管理或切换。
+
+- **下载：** 型号行点击「下载」，校验完成后就绪。可取消或通过更多菜单重新下载。下载期间保持应用开启，进程中断后从头重试。
+- **导入：** 更多菜单选择「导入模型」，选择直接包含全部所需文件的文件夹。文件名见型号详情；文件平铺，Qwen tokenizer 三文件也在包根目录，VAD 固定名为 `silero-vad.onnx`。
+- **选用：** 安装且兼容当前语言方向后可选用，选择本身不会下载。识别与翻译偏好独立保存；语言更改时保留兼容选择，否则自动匹配。
+- **维护：** 更多菜单提供校验、来源、详情和删除。删除需确认，只影响当前型号；损坏文件可直接重新下载。
+
+安装前检查空间，替换需额外一份模型暂存空间及少量余量。新文件完整通过尺寸与 SHA-256 校验后才激活；失败、取消或中断不会用半成品覆盖旧模型。安装与字幕会话互斥。
+
+开发机可下载同一份固定清单，再将输出文件夹复制到手机导入：
+
+```sh
+./gradlew downloadModels  # 默认 X-ASR 与 Hy-MT2 基础组合
+./gradlew downloadModels -Pmodel=nemotron-3.5-560ms-int8
+./gradlew downloadModels -Pmodel=qwen3-asr-0.6b-int8
+./gradlew downloadModels -Pmodel=milmmt-46-1b-v1-q4-k-m
+```
+
+输出为 `artifacts/models/<模型 ID>/`，使用不可变 revision 并检查字节数和 SHA-256。开发环境见[构建说明](architecture.md#6-构建与开发)。
 
 ## 已接入型号
 
 | 模型 ID | 型号 | 下载大小 | 适配器 |
 | --- | --- | --- | --- |
+| `x-asr-zh-en-480ms` | X-ASR · 中英 · 480 ms | 0.61 GB | online-transducer |
+| `nemotron-3.5-560ms-int8` | NVIDIA Nemotron 3.5 · 0.6B · INT8 | 0.68 GB | online-transducer |
+| `pengcheng-8lang-int8` | PengChengStarling · 八语种 · INT8 | 0.34 GB | online-transducer |
+| `hy-mt2-1.8b-q4-k-m` | Hy-MT2 1.8B · Q4_K_M | 1.13 GB | hy-mt2 |
 | `hy-mt2-streamrevise-v4-q4-k-m` | Hy-MT2 StreamRevise v4 · 1.8B · Q4_K_M | 1.07 GB | stream-revise |
 | `milmmt-46-1b-v1-q4-k-m` | MiLMMT-46 1B · v1.0 · Q4_K_M | 0.81 GB | milmmt |
 | `milmmt-46-4b-v1-q4-k-m` | MiLMMT-46 4B · v1.0 · Q4_K_M | 2.49 GB | milmmt |
@@ -59,4 +85,4 @@ Murasaki v0.2 8B/14B、MiLMMT 4B/12B、Qwen3-ASR 1.7B、Parakeet v2 未在本次
 
 本地详细日志位于 `artifacts/adapter-*.log`、`pipeline-*-final.log`、`qwen-completeness-final.log`、`model-network-proxy-final.log` 与 `baseline-*-final.log`，未进入 Git。
 
-2026-09-12 的连续窗口与流式阅读补充检查见 [验收记录 2.10](validation.md#210-连续窗口与流式阅读)：Qwen、Parakeet 日语和 X-ASR 均通过超过 20 秒的连续接续及提前停止计数；真实流式译文、30 秒阅读保留、滚动位置、横屏大字号通过。重复锚点完整不代表逐字无误：Qwen 接缝仍有错词，Parakeet 日语无标点使翻译首显约 37 秒，MiLMMT 对重复长段仍有译文压缩。没有把这些观察作为质量通过或持续实时达标。
+后续结果以[连续窗口与流式阅读](validation.md#210-连续窗口与流式阅读)和[翻译预填充与过载恢复](validation.md#211-翻译预填充与过载恢复)为准，包含接续错词、长句等待、约 10 分钟回放与已知失败；上述早期单次数据不作为当前性能结论。
