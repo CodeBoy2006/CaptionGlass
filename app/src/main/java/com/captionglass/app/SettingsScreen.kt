@@ -97,11 +97,13 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
                         Column(Modifier.weight(1f)) {
                             Text(stringResource(when (backend) {
                                 TranslationBackend.VULKAN -> R.string.backend_vulkan
+                                TranslationBackend.OPENCL -> R.string.backend_opencl
                                 TranslationBackend.CPU -> R.string.backend_cpu
                                 TranslationBackend.HEXAGON -> R.string.backend_hexagon
                             }), style = MaterialTheme.typography.titleSmall)
                             Text(stringResource(when (backend) {
                                 TranslationBackend.VULKAN -> R.string.backend_vulkan_hint
+                                TranslationBackend.OPENCL -> R.string.backend_opencl_hint
                                 TranslationBackend.CPU -> R.string.backend_cpu_hint
                                 TranslationBackend.HEXAGON -> when (hexagonAvailable) {
                                     null -> R.string.backend_checking

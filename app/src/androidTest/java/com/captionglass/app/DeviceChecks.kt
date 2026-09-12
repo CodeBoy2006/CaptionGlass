@@ -194,13 +194,16 @@ class DeviceChecks : Instrumentation() {
         val npu = LocalTranslator.hexagonAvailable()
         report("Hexagon driver/architecture available=$npu; requested=${backend.id}")
         if (backend == TranslationBackend.CPU) {
-            // CPU must work even when Vulkan registration is explicitly disabled.
-            android.system.Os.setenv("GGML_DISABLE_VULKAN", "1", true)
-            NativeCall(120_000).use { call ->
-                val failure = runCatching { LocalTranslator(targetContext, spec.file(targetContext, "model"),
-                    spec.translationFormat, call, TranslationBackend.VULKAN).close() }.exceptionOrNull()
-                check(failure is TranslationBackendException)
+            // CPU must work without initializing either GPU backend.
+            for (gpu in listOf(TranslationBackend.VULKAN, TranslationBackend.OPENCL)) {
+                android.system.Os.setenv("GGML_DISABLE_${gpu.id.uppercase()}", "1", true)
+                NativeCall(120_000).use { call ->
+                    val failure = runCatching { LocalTranslator(targetContext, spec.file(targetContext, "model"),
+                        spec.translationFormat, call, gpu).close() }.exceptionOrNull()
+                    check(failure is TranslationBackendException && failure.message == "${gpu.id}_device_unavailable")
+                }
             }
+            report("PASS: unavailable Vulkan/OpenCL explicitly rejected before CPU translation")
         }
         if (backend == TranslationBackend.HEXAGON && (spec.id != "hy-mt2-1.8b-q8-0" || !npu)) {
             NativeCall(120_000).use { call ->
@@ -216,7 +219,7 @@ class DeviceChecks : Instrumentation() {
             NativeCall(120_000).use { load ->
                 LocalTranslator(targetContext, spec.file(targetContext, "model"), spec.translationFormat, load, backend).use { mt ->
                     var streamed = false
-                    NativeCall(60_000).use { call ->
+                    NativeCall(8_000).use { call ->
                         val result = mt.translate("The meeting starts at three o'clock.", emptyList(), LanguagePair(), call,
                             onProgress = { if (it.isNotBlank()) streamed = true })
                         check(streamed && result.any { it in '\u4e00'..'\u9fff' } && Regex("三|3").containsMatchIn(result))
@@ -232,6 +235,11 @@ class DeviceChecks : Instrumentation() {
                         check(partial)
                     }
                     prefixCacheCheck(mt, spec.translationFormat)
+                    NativeCall(8_000).use { call ->
+                        val result = mt.translate("明日は公園に行きません。", emptyList(), LanguagePair(Language.JA, Language.ZH), call)
+                        check("公园" in result && Regex("不|没|未").containsMatchIn(result))
+                        report("PASS: ${backend.id} negation after cancellation/recovery $result ${mt.timings()}")
+                    }
                 }
             }
         }
@@ -336,7 +344,7 @@ class DeviceChecks : Instrumentation() {
 
     private fun catalogChecks() {
         val initial = ModelSelection()
-        check(TranslationBackend.entries.map { it.id }.distinct().size == 3)
+        check(TranslationBackend.entries.map { it.id }.toSet() == setOf("vulkan", "opencl", "cpu", "hexagon"))
         check(TranslationBackend.fromId("unknown") == null)
         TranslationBackend.entries.forEach { selected ->
             check(TranslationBackend.fromId(selected.id) == selected)

@@ -60,11 +60,12 @@ vivo 的后台冻结可能在 Instrumentation 首个 Activity 启动前暂停进
 ```sh
 adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend cpu com.captionglass.app.test/com.captionglass.app.DeviceChecks
 adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend vulkan com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend opencl -e model milmmt-46-1b-v1-q4-k-m com.captionglass.app.test/com.captionglass.app.DeviceChecks
 adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend hexagon com.captionglass.app.test/com.captionglass.app.DeviceChecks
 adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend hexagon -e model hy-mt2-1.8b-q8-0 com.captionglass.app.test/com.captionglass.app.DeviceChecks
 ```
 
-CPU 检查先禁用 Vulkan，验证明确的 GPU 不可用错误后执行真实 CPU 翻译。可用后端执行两次加载／增量翻译／卸载，并检查数字、主动取消、固定前缀复用及跨句隔离。Hexagon + Q4_K_M 必须明确拒绝量化格式；无兼容驱动的设备使用 Q8_0 必须明确拒绝设备。`PASS: backend hexagon` 可能表示预期拒绝，必须同时检查具体 PASS 行及原生日志，不能把它当作 NPU 成功推理。NPU 成功证据需要 HTP 设备、模型卸载层数和实际输出；固定短句不能替代实时音频质量或持续功耗验收。
+CPU 检查先禁用 Vulkan 与 OpenCL，验证明确的 GPU 不可用错误后执行真实 CPU 翻译。可用后端执行两次加载／增量翻译／卸载，并检查 8 秒调用预算内的数字和否定句、主动取消、固定前缀复用及跨句隔离。Hexagon + Q4_K_M 必须明确拒绝量化格式；无兼容驱动的设备使用 Q8_0 必须明确拒绝设备。`PASS: backend hexagon` 可能表示预期拒绝，必须同时检查具体 PASS 行及原生日志，不能把它当作 NPU 成功推理。GPU/NPU 成功证据需要实际设备、模型卸载层数和实际输出；固定短句不能替代实时音频质量或持续功耗验收。
 
 ### 1.3 实际跨应用与悬浮窗
 
@@ -344,6 +345,26 @@ JDK 17 下 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAn
 
 证据在 ignored `artifacts/backend-final-build.log`、`backend-tablet-catalog.log`、`backend-settings-tablet.png`、`backend-settings-cpu-restored.xml`；模型传输失败记录保留在 `backend-tablet-deploy.log`。
 
+### 2.13 小米 Adreno Vulkan 故障与 OpenCL 接入
+
+2026-09-12，Xiaomi Pad 8 Pro / SM8750P / Adreno 830 / Android 16 API 36，系统 OS3.0.308.0.WPYCNXM，GPU 驱动 0800.71。使用清单固定的 MiLMMT-46 1B v1.0 Q4_K_M GGUF；名义 Q4_K_M 文件实际混有 Q5_0、Q4_K、Q6_K 和 Q8_0 张量。
+
+Vulkan 原路径在首句触发 `mul_mat_vec_q5_0_q8_1_f32` shader 链接失败及 `createComputePipeline: ErrorUnknown`。禁用 subgroup 后能编译，但未正常结束生成；上游结果对照在第一个 Q5_0 `Qcur-0` 矩阵乘观察到 GPU 14.1015、CPU -4.0171。其他局部 shader、FP16 和矩阵路径调整也未取得可用译文。故障位于当前运行库与该设备 Vulkan 驱动组合的编译／计算路径；不能据此归因于模型文件损坏，也不能推广到所有骁龙驱动。这些诊断改动已撤回。
+
+按用户选择接入 OpenCL。系统 `libOpenCL.so` 自身为 ICD loader；向进程设置同名 `OCL_ICD_FILENAMES` 会令其加载自身而挂起。最终固定加载器补丁直接打开可选系统入口，通过公开 `clGetPlatformIDs` 枚举底层 ICD 设备，隐藏静态 loader 符号，不打包厂商驱动。实际日志为 `QUALCOMM Adreno(TM) 830 (OpenCL 3.0 Adreno(TM) 830)`、27/27 层卸载、OpenCL 模型及 KV 缓冲。
+
+| MiLMMT 固定短句检查 | OpenCL 第 1 / 2 轮 | CPU 第 1 / 2 轮 |
+| --- | --- | --- |
+| 英译中，保留“三点” | 4,922 / 1,892 ms | 760 / 1,185 ms |
+| 日译中，保留“不去公园” | 1,527 / 1,119 ms | 1,022 / 1,026 ms |
+| 两轮加载／卸载、增量回调、取消及失败恢复 | 通过 | 通过 |
+
+两条检查均使用 8 秒原生调用预算。OpenCL 第一轮含首次使用时的延迟编译；天气短句后续约 1.1 秒。CPU 检查在 Vulkan/OpenCL 均被禁用时通过，两个 GPU 路径均明确报告不可用。MiLMMT 固定前缀为空，此模型的复用检查验证的是跨句、取消和失败后的隔离，不是非空固定提示的缓存收益。这些固定文本用于后端功能检查，温度与缓存条件未严格控制；本组 OpenCL 未显示相对 CPU 的短句速度优势，也不是自然语音、视频并行、功耗或长时质量验收。
+
+最终 APK 的新进程 `adapter` 检查通过，已有 OpenCL 编译缓存时首句“今天天气很好。”为 4,093 ms，并通过取消／失败恢复。JDK 17 的 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest`、APK/ELF 16 KB 对齐、OpenCL 归档哈希与补丁干净重放均通过。JNI 无 `libOpenCL.so` 启动时依赖，不导出 `cl*` / `khrIcd*` 符号；CPU 注册编译单元不含 GPU 自动注册。真机四个处理器选项显示正常，已选 MiLMMT-46 + OpenCL，强制停止重启后配置仍保存。
+
+成功日志保存在 ignored `artifacts/opencl-milmmt-system-entry.log`、`opencl-milmmt-native-system-entry.log`、`opencl-cpu-regression.log`、`opencl-cached-process.log`、`opencl-final-build.log`，设置证据为 `opencl-settings-selected.png` 与 `opencl-selection-restored.xml`。Vulkan 证据为 `xiaomi-vulkan-shader-native.log` 与 `xiaomi-vulkan-reference-ops.log`；失败探索不作为 OpenCL 成功证据。
+
 ## 3. M2：可持续体验
 
 实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
@@ -365,4 +386,4 @@ JDK 17 下 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAn
 
 ## 4. M3：经验证的扩展
 
-日语、多语种与 Vulkan MT 已提供实验性接入，Hexagon NPU 为可选实验后端，均仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU 设备白名单、QNN／其他 NPU 和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。
+日语、多语种与 Vulkan MT 已提供实验性接入，OpenCL GPU 和 Hexagon NPU 为可选实验后端，均仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU 设备白名单、QNN／其他 NPU 和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。

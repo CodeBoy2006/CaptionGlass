@@ -3,6 +3,7 @@
 #include <llama.h>
 #include <ggml-backend.h>
 #include <ggml-vulkan.h>
+#include <ggml-opencl.h>
 #include <ggml-hexagon.h>
 #include <gguf.h>
 #include <atomic>
@@ -148,7 +149,7 @@ static void check_hexagon_model(const std::string & path) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray path, jbyteArray prefix, jlong token,
-                                               jstring backend, jstring hexagon_directory) {
+                                               jstring backend, jstring runtime_directory) {
     try {
         auto * call = reinterpret_cast<Call *>(token);
         check(call);
@@ -163,8 +164,8 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
         });
         auto m = std::make_unique<Model>();
         m->backend = string(env, backend);
-        const bool cpu = m->backend == "cpu", hexagon = m->backend == "hexagon";
-        if (!cpu && !hexagon && m->backend != "vulkan") throw BackendError("unknown_backend");
+        const bool cpu = m->backend == "cpu", hexagon = m->backend == "hexagon", opencl = m->backend == "opencl";
+        if (!cpu && !hexagon && !opencl && m->backend != "vulkan") throw BackendError("unknown_backend");
         const auto model_path = bytes(env, path);
         if (hexagon) check_hexagon_model(model_path);
         {
@@ -173,10 +174,16 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
                 ggml_backend_reg_t reg = nullptr;
                 try {
                     if (hexagon) {
-                        auto directory = string(env, hexagon_directory);
+                        auto directory = string(env, runtime_directory);
                         if (directory.empty() || setenv("ADSP_LIBRARY_PATH", directory.c_str(), 1) != 0)
                             throw BackendError("hexagon_runtime_unavailable");
                         reg = ggml_backend_hexagon_reg();
+                    } else if (opencl) {
+                        __android_log_print(ANDROID_LOG_INFO, "CaptionGlassNative", "MT discovering OpenCL device");
+                        auto directory = string(env, runtime_directory);
+                        if (directory.empty() || setenv("GGML_OPENCL_KERNEL_CACHE_DIR", directory.c_str(), 1) != 0)
+                            throw BackendError("opencl_runtime_unavailable");
+                        if (!getenv("GGML_DISABLE_OPENCL")) reg = ggml_backend_opencl_reg();
                     } else if (!getenv("GGML_DISABLE_VULKAN")) reg = ggml_backend_vk_reg();
                     if (reg) ggml_backend_register(reg);
                     if (!reg || ggml_backend_reg_dev_count(reg) == 0) throw BackendError("device_unavailable");
@@ -189,7 +196,7 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
                     }
                 } catch (const std::exception & e) {
                     __android_log_print(ANDROID_LOG_WARN, "CaptionGlassNative", "MT backend=%s unavailable: %s", m->backend.c_str(), e.what());
-                    throw BackendError(hexagon ? "hexagon_device_unavailable" : "vulkan_device_unavailable");
+                    throw BackendError(m->backend + "_device_unavailable");
                 }
             }
         }

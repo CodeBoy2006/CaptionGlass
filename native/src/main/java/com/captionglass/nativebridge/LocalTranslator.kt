@@ -14,7 +14,7 @@ class TranslationModelUnsupportedException(message: String) : IllegalStateExcept
 
 /** Stable persisted/JNI IDs; ASR always uses its own CPU configuration. */
 enum class TranslationBackend(val id: String) {
-    VULKAN("vulkan"), CPU("cpu"), HEXAGON("hexagon");
+    VULKAN("vulkan"), OPENCL("opencl"), CPU("cpu"), HEXAGON("hexagon");
     companion object {
         fun fromId(id: String?) = entries.find { it.id == id }
     }
@@ -37,7 +37,13 @@ class LocalTranslator(context: Context, model: File, private val format: Transla
                       backend: TranslationBackend) : Closeable {
     private var handle = NativeBindings.load(
         model.path.toByteArray(), format.prefix.toByteArray(), call.handle, backend.id,
-        if (backend == TranslationBackend.HEXAGON) hexagonDirectory(context) else "")
+        when (backend) {
+            TranslationBackend.HEXAGON -> hexagonDirectory(context)
+            TranslationBackend.OPENCL -> File(context.cacheDir, "opencl").apply {
+                if (!isDirectory && !mkdirs()) throw TranslationBackendException("opencl_cache_unavailable")
+            }.absolutePath
+            else -> ""
+        })
 
     companion object {
         /** Driver/architecture discovery only. Opening a DSP session is deferred to the MT worker. */
@@ -94,7 +100,7 @@ internal object NativeBindings {
     external fun cancel(call: Long)
     external fun freeCall(call: Long)
     external fun hexagonAvailable(): Boolean
-    external fun load(path: ByteArray, prefix: ByteArray, call: Long, backend: String, hexagonDirectory: String): Long
+    external fun load(path: ByteArray, prefix: ByteArray, call: Long, backend: String, runtimeDirectory: String): Long
     external fun unload(model: Long)
     external fun timings(model: Long): String
     external fun translate(model: Long, prefix: ByteArray, prompt: ByteArray, suffix: ByteArray, background: ByteArray, sampling: Int, call: Long, maxTokens: Int, progress: ((ByteArray) -> Unit)?): ByteArray

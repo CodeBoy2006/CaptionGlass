@@ -6,7 +6,7 @@
 
 服务于外语课程、技术分享与长视频观看，优先保证可读性、内容完整性和持续性能。阅读体验是待验证的差异化假设，不声称优于竞品。
 
-- 首页以语言、字幕和运行状态表达能力，不显示量化、后端或线程参数；设置页按用户选择提供 GPU (Vulkan)、CPU、NPU (Hexagon) 三种翻译处理器；使用系统字体并支持缩放。
+- 首页以语言、字幕和运行状态表达能力，不显示量化、后端或线程参数；设置页按用户选择提供 GPU (Vulkan)、GPU (OpenCL)、CPU、NPU (Hexagon) 四种翻译处理器；使用系统字体并支持缩放。
 - 回看只改变阅读位置，暂停停止处理，停止结束会话，三者不得共用含糊状态；暂停尚未实现。无法控制任意播放器或获取其时间轴，未来导出使用采集会话时间。
 - 不以切断否定、数字或专名来换取延迟，不用摘要替代完整字幕；确认片段必须有译文或明确未译结果。
 - 不申请通知读取、无障碍、账号、屏幕图像访问或媒体控制权限补足核心流程。仅用户主动下载模型时联网，模型包只含数据，运行库随 APK 提供。
@@ -32,7 +32,7 @@ flowchart LR
 | --- | --- |
 | `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、模型下载与 SAF 导入 |
 | `engine` | 原文稳定/提交/修订、单工作器队列、有界双语记录、确定性回归检查 |
-| `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp CPU/Vulkan/Hexagon C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
+| `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp CPU/Vulkan/OpenCL/Hexagon C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
 `engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。
 
@@ -119,7 +119,9 @@ MT 默认 1 个等待槽和 1 个 active，确认后总预算仍为 8 秒，包�
 | MT | Hy-MT2 1.8B Q4_K_M（默认）或官方 Q8_0；llama.cpp v0.4.0 / `5266f24…` + 仓库 Vulkan/Hexagon 补丁；GPU/NPU 显式选择设备并卸载层／KV；CPU 的设备列表为空、层卸载为 0、KV/算子卸载关闭；CPU 算子 3 线程；context 2,048、每次提交 / batch / ubatch 8 |
 | Android native | NDK 27.1.12297006、CMake 3.22.1、arm64-v8a / ARMv8-A 基线；16 KB LOAD 对齐 |
 
-sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan/Hexagon 主机代码由同一 Android NDK 静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。仅在明确选中时注册并初始化相应加速器，CPU 不初始化 Vulkan。Hexagon 的四份 DSP 库来自固定源码与工具链，随 APK assets 打包，在 MT worker 上复制至私有 no-backup 目录供 FastRPC 加载；不将 Hexagon ELF 当作 ARM64 JNI 库。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。GPU 显式选择 Vulkan 设备，NPU 显式选择 HTP 设备。驱动查询必须返回已编译的 v73/v75/v79/v81，拒绝上游对未知架构的默认猜测；设置中的支持检测不打开 DSP 会话，启动时仍需成功打开真实会话。NPU 加载前按 GGUF 实际张量类型拒绝不支持的 K-quants/IQ4_XS，不靠文件名猜测。设备不可用、模型量化不兼容分别显示可恢复提示；算子／分配失败沿加载失败或未翻译路径反馈，均不静默改用另一处理器。停止后在模型与上下文释放完毕时重置 Hexagon 设备会话，下一次重新打开。Hexagon 队列每秒等待一次，连续 5 秒无响应、读取／写入错误或 DSP 运算失败会先通过 FastRPC 终止本应用的远端 DSP 进程，再抛出异常并使上下文不可用，避免错误结果成为成功译文。若驱动无法安全终止远端进程，保留 fail-stop 保护，不释放可能仍被硬件引用的内存；此时应用进程会结束。驱动调用本身不提供硬实时保证。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
+sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan/OpenCL/Hexagon 主机代码由同一 Android NDK 静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。仅在明确选中时注册并初始化相应加速器，CPU 不初始化 Vulkan 或 OpenCL。Hexagon 的四份 DSP 库来自固定源码与工具链，随 APK assets 打包，在 MT worker 上复制至私有 no-backup 目录供 FastRPC 加载；不将 Hexagon ELF 当作 ARM64 JNI 库。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。GPU 显式选择 Vulkan 或 OpenCL 设备，NPU 显式选择 HTP 设备。驱动查询必须返回已编译的 v73/v75/v79/v81，拒绝上游对未知架构的默认猜测；设置中的支持检测不打开 DSP 会话，启动时仍需成功打开真实会话。NPU 加载前按 GGUF 实际张量类型拒绝不支持的 K-quants/IQ4_XS，不靠文件名猜测。设备不可用、模型量化不兼容分别显示可恢复提示；算子／分配失败沿加载失败或未翻译路径反馈，均不静默改用另一处理器。停止后在模型与上下文释放完毕时重置 Hexagon 设备会话，下一次重新打开。Hexagon 队列每秒等待一次，连续 5 秒无响应、读取／写入错误或 DSP 运算失败会先通过 FastRPC 终止本应用的远端 DSP 进程，再抛出异常并使上下文不可用，避免错误结果成为成功译文。若驱动无法安全终止远端进程，保留 fail-stop 保护，不释放可能仍被硬件引用的内存；此时应用进程会结束。驱动调用本身不提供硬实时保证。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
+
+OpenCL 使用固定 llama.cpp 的 Adreno 优化路径与内嵌 kernels，系统需提供 OpenCL 2.0+、FP16 和 subgroup 等所需能力。Khronos OpenCL-Headers / ICD-Loader 固定 v2024.10.24 的提交与归档哈希，静态 loader 不导出符号，JNI 没有对系统 `libOpenCL.so` 的启动时链接依赖。Manifest 将该系统库声明为可选，只有选中 OpenCL 才发现它；Android 补丁通过公开平台枚举支持系统入口本身也是 ICD loader 的设备，避免设置会导致系统库加载自身的 `OCL_ICD_FILENAMES`。编译缓存位于应用私有 `cache/opencl`，由上游按源码、编译选项及设备信息校验。缺少设备明确报错；上游部分驱动／内核错误仍使用 abort/exit，不能由 JNI 异常捕获，也不保证挂起驱动的退出时限。
 
 `TranslationFormat` 按固定型号生成提示：Hy-MT2 保留原提示顺序与采样，背景仍位于翻译指令之前，仅复用两个固定角色 tokens。StreamRevise 使用作者的首段／原文历史格式与 greedy；MiLMMT 使用源、目标全名的裸 completion，不加 BOS 或聊天模板；Murasaki 使用已检查 GGUF 的 Qwen3 ChatML、简短的“仅输出完整译文”提示、已闭合思考块和 `译文：` 答案起始。Murasaki 的 greedy sampler 用现有 logit bias 屏蔽两个思考控制 token，避免在译文后继续分析；仍须正常 EOG 才成功，不因标点、换行或输出上限提前截断。角色控制符与可信系统提示单独分词，语音与历史始终 `parse_special=false`。空译文、未正常结束和未闭合思考均进入明确失败终态。JNI 用 UTF-8 byte arrays，不用 modified UTF-8 传中文。各来源、精确型号及验收范围见 [模型支持表](model-support.md)。
 
@@ -131,7 +133,7 @@ Hy-MT2 的官方支持表列出 38 个语言／文字变体代码，本次按完
 
 ### 4.1 选择与模型管理
 
-`Language` 固定模型联合语言表；能力仍由每个型号自己的源／目标集合约束。`ModelSelection` 保存语言方向、ASR ID、MT ID 和翻译后端稳定 ID（vulkan/cpu/hexagon）。同语方向、未知代码、不兼容组合被拒绝。更改语言时保留兼容的既有选择，否则匹配第一个兼容型号；语言选择器只提供有完整识别／翻译组合的方向。SharedPreferences 保存五项偏好；权限、SAF 回调绑定发起时的模型 ID，选择在会话和安装操作期间锁定。
+`Language` 固定模型联合语言表；能力仍由每个型号自己的源／目标集合约束。`ModelSelection` 保存语言方向、ASR ID、MT ID 和翻译后端稳定 ID（vulkan/opencl/cpu/hexagon）。同语方向、未知代码、不兼容组合被拒绝。更改语言时保留兼容的既有选择，否则匹配第一个兼容型号；语言选择器只提供有完整识别／翻译组合的方向。SharedPreferences 保存五项偏好；权限、SAF 回调绑定发起时的模型 ID，选择在会话和安装操作期间锁定。
 
 服务再次验证 Intent 中的语言、模型、后端代码和模型能力，创建不可变会话快照。通知与界面显示该快照，ASR 从清单文件角色得到路径，MT 使用固定目标语言全名生成提示词；句柄和 worker 所有权不变。
 

@@ -19,6 +19,11 @@ fetch llama-source.tar.gz 2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91
   https://codeload.github.com/ggml-org/llama.cpp/tar.gz/5266f24da75dc449bd56cbed7addb9c8e4a6a73e artifacts/deps/llama-source
 patch --batch -p1 -d artifacts/deps/llama-source < scripts/patches/llama-vulkan-cleanup.patch
 patch --batch -p1 -d artifacts/deps/llama-source < scripts/patches/llama-hexagon-session.patch
+fetch opencl-headers.tar.gz fa754f59be79a59e2870712c21619803259b03008c1d82e5eaaa74a3e36b0b72 \
+  https://codeload.github.com/KhronosGroup/OpenCL-Headers/tar.gz/4ea6df132107e3b4b9407f903204b5522fdffcd6 artifacts/deps/opencl-headers
+fetch opencl-loader.tar.gz 1def7925feee07af69c0babe65a350a5ce0c59e70e781c4a4a1a562810212f13 \
+  https://codeload.github.com/KhronosGroup/OpenCL-ICD-Loader/tar.gz/5907ac1114079de4383cecddf1c8640e3f52f92b artifacts/deps/opencl-loader
+patch --batch -p1 -d artifacts/deps/opencl-loader < scripts/patches/opencl-android-driver.patch
 fetch vulkan-headers.tar.gz 17f8ff30fd79fb7531efcb7c78c02c17a595208d482a150f06836b0ca97ef8f2 \
   https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/vulkan-sdk-1.4.321.0 artifacts/deps/vulkan-headers
 fetch spirv-headers-shaderc.tar.gz c2225a49c3d7efa5c4f4ce4a6b42081e6ea3daca376f3353d9d7c2722d77a28a \

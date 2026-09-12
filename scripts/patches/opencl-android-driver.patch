@@ -1,0 +1,36 @@
+--- a/loader/linux/icd_linux.c
++++ b/loader/linux/icd_linux.c
+@@ -215,4 +215,10 @@
+ void khrIcdOsVendorsEnumerate(void)
+ {
+     khrIcdInitializeTrace();
++#ifdef __ANDROID__
++    // The manifest exposes the optional system driver. Do not set OCL_ICD_FILENAMES:
++    // Qualcomm's libOpenCL.so can itself be an ICD loader and would load itself.
++    // CaptionGlass hides its static loader symbols to keep both loaders isolated.
++    khrIcdVendorAdd("libOpenCL.so");
++#endif
+     khrIcdVendorsEnumerateEnv();
+--- a/loader/icd.c
++++ b/loader/icd.c
+@@ -96,8 +96,18 @@
+         goto Done;
+     }
+
+-    // use that function to get the clIcdGetPlatformIDsKHR function pointer
+-    p_clIcdGetPlatformIDs = (pfn_clIcdGetPlatformIDs)(size_t)p_clGetExtensionFunctionAddress("clIcdGetPlatformIDsKHR");
++#ifdef __ANDROID__
++    // The public Android library may itself be a loader. Its public enumeration
++    // returns the underlying ICD platforms but its extension lookup omits this KHR entry.
++    if (strcmp(libraryName, "libOpenCL.so") == 0)
++    {
++        p_clIcdGetPlatformIDs = (pfn_clIcdGetPlatformIDs)(size_t)khrIcdOsLibraryGetFunctionAddress(library, "clGetPlatformIDs");
++    }
++    else
++#endif
++    {
++        p_clIcdGetPlatformIDs = (pfn_clIcdGetPlatformIDs)(size_t)p_clGetExtensionFunctionAddress("clIcdGetPlatformIDsKHR");
++    }
+     if (!p_clIcdGetPlatformIDs)
+     {
+         KHR_ICD_TRACE("failed to get extension function address clIcdGetPlatformIDsKHR\n");

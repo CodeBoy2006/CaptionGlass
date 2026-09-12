@@ -7,7 +7,9 @@ The following upstream components keep their own licenses.
 | --- | --- | --- |
 | sherpa-onnx Android JNI and Kotlin API | `k2-fsa/sherpa-onnx` commit `11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf` (v1.13.8) | Apache-2.0 |
 | ONNX Runtime, linked into sherpa JNI | v1.28.2, static archive SHA-256 pinned by the fixed sherpa source | MIT and bundled third-party notices |
-| llama.cpp / ggml CPU, Vulkan and Hexagon | `ggml-org/llama.cpp` commit `5266f24da75dc449bd56cbed7addb9c8e4a6a73e` (v0.4.0), plus `scripts/patches/llama-vulkan-cleanup.patch` and `scripts/patches/llama-hexagon-session.patch` | MIT |
+| llama.cpp / ggml CPU, Vulkan, OpenCL and Hexagon | `ggml-org/llama.cpp` commit `5266f24da75dc449bd56cbed7addb9c8e4a6a73e` (v0.4.0), plus `scripts/patches/llama-vulkan-cleanup.patch` and `scripts/patches/llama-hexagon-session.patch` | MIT |
+| OpenCL-Headers | Khronos commit `4ea6df132107e3b4b9407f903204b5522fdffcd6` (v2024.10.24), archive hash in prepare-native.sh | Apache-2.0 |
+| OpenCL-ICD-Loader (static, layers disabled) | Khronos commit `5907ac1114079de4383cecddf1c8640e3f52f92b` (v2024.10.24), plus `scripts/patches/opencl-android-driver.patch` | Apache-2.0 |
 | Vulkan-Headers (including Vulkan-Hpp) | Khronos `vulkan-sdk-1.4.321.0`, archive hash in prepare-native.sh | Apache-2.0 OR MIT for compiled headers |
 | SPIRV-Headers | Khronos commit `2a611a970fdbc41ac2e3e328802aed9985352dca`, shared with shaderc | MIT; source exceptions listed in adjacent license |
 | shaderc / SPIRV-Tools / glslang (host build tools only) | shaderc v2025.3 and its matched DEPS, all archive hashes in prepare-native.sh | Apache-2.0 (shaderc and SPIRV-Tools); glslang's BSD/MIT/Apache terms in upstream LICENSE.txt |
@@ -28,6 +30,13 @@ contains synchronization exceptions during context and Vulkan backend teardown;
 the Qwen patch exposes EOS completion through an existing stream option. Other integration behavior resides in CaptionGlass's bindings. Android provides
 the Vulkan loader/driver; the pinned shader compiler is built locally and is not
 bundled in the APK.
+
+OpenCL headers and ICD loader are Copyright The Khronos Group Inc.; their
+Apache-2.0 license is adjacent. The Android discovery patch loads the optional
+system `libOpenCL.so` without setting an ICD environment variable that can recurse
+inside Qualcomm's system loader. Static loader symbols are hidden. OpenCL kernels
+come from the pinned ggml source and are embedded in the APK; the device supplies
+the proprietary GPU driver, which is not copied into the APK.
 
 Before public redistribution, audit the complete transitive license inventory of
 the upstream sherpa all-feature JNI distribution and the Gradle dependency graph.

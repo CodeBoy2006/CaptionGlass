@@ -63,9 +63,11 @@
     <string name="settings_pack">模型管理</string>
     <string name="settings_translation_backend">翻译处理器</string>
     <string name="backend_vulkan">GPU (Vulkan)</string>
+    <string name="backend_opencl">GPU (OpenCL)</string>
     <string name="backend_cpu">CPU</string>
     <string name="backend_hexagon">NPU (Hexagon)</string>
     <string name="backend_vulkan_hint">默认 · 使用支持 Vulkan 的图形处理器</string>
+    <string name="backend_opencl_hint">实验选项 · 需兼容的骁龙 GPU 与 OpenCL 驱动</string>
     <string name="backend_cpu_hint">使用中央处理器，速度取决于设备与模型</string>
     <string name="backend_hexagon_hint">实验选项 · 需兼容的骁龙设备，推荐 Hy-MT2 Q8_0</string>
     <string name="backend_hexagon_unavailable">此设备或系统未提供受支持的 Hexagon NPU</string>
