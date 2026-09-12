@@ -52,6 +52,8 @@ internal val CaptureStatus.label: Int
         CaptureStatus.PERMISSION_LOST -> R.string.status_permission_lost
         CaptureStatus.PACK_INVALID -> R.string.status_pack_invalid
         CaptureStatus.LOAD_FAILED -> R.string.status_load_failed
+        CaptureStatus.BACKEND_UNAVAILABLE -> R.string.status_backend_unavailable
+        CaptureStatus.BACKEND_MODEL_UNSUPPORTED -> R.string.status_backend_model_unsupported
         CaptureStatus.AUDIO_UNSUPPORTED -> R.string.status_audio_unsupported
         CaptureStatus.CAPTURE_INTERRUPTED -> R.string.status_capture_interrupted
         CaptureStatus.OVERRUN -> R.string.status_overrun
@@ -70,7 +72,7 @@ internal val CaptureStatus.icon: Int
         CaptureStatus.CONSENT_ENDED -> R.drawable.ic_stop_screen_share
         CaptureStatus.PERMISSION_LOST -> R.drawable.ic_block
         CaptureStatus.PACK_INVALID -> R.drawable.ic_package
-        CaptureStatus.LOAD_FAILED -> R.drawable.ic_memory
+        CaptureStatus.LOAD_FAILED, CaptureStatus.BACKEND_UNAVAILABLE, CaptureStatus.BACKEND_MODEL_UNSUPPORTED -> R.drawable.ic_memory
         CaptureStatus.AUDIO_UNSUPPORTED -> R.drawable.ic_music_off
         CaptureStatus.CAPTURE_INTERRUPTED -> R.drawable.ic_link_off
         CaptureStatus.OVERRUN -> R.drawable.ic_speed
@@ -85,6 +87,8 @@ internal val CaptureStatus.hint: Int?
         CaptureStatus.RECOGNITION_FAILED, CaptureStatus.TRANSLATION_FAILED -> R.string.hint_restart
         CaptureStatus.PACK_INVALID -> R.string.hint_reimport
         CaptureStatus.LOAD_FAILED -> R.string.hint_model_load
+        CaptureStatus.BACKEND_UNAVAILABLE -> R.string.hint_backend_unavailable
+        CaptureStatus.BACKEND_MODEL_UNSUPPORTED -> R.string.hint_backend_model_unsupported
         CaptureStatus.OVERRUN -> R.string.hint_overrun
         CaptureStatus.START_FAILED -> R.string.hint_start_failed
         else -> null

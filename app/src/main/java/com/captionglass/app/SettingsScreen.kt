@@ -31,6 +31,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.captionglass.nativebridge.LocalTranslator
+import com.captionglass.nativebridge.TranslationBackend
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val Plate = Color(CaptionPalette.PLATE_TOP)
 private val Translation = Color(CaptionPalette.TRANSLATION)
@@ -45,6 +49,9 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
                             onDisplay: (CaptionDisplay) -> Unit, onStyle: (CaptionStyle) -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+    val hexagonAvailable by produceState<Boolean?>(null) {
+        value = withContext(Dispatchers.IO) { LocalTranslator.hexagonAvailable() }
+    }
     var family by rememberSaveable { mutableStateOf<String?>(null) }
     BackHandler(family != null) { family = null }
     if (family != null) {
@@ -74,6 +81,39 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
         Section(R.string.settings_pack) {
             ModelManager(pack, catalog, selection, localModels, availableBytes, busy,
                 onImport, onSelect, onDownload, onCheck, onRemove, null) { family = it }
+        }
+
+        Section(R.string.settings_translation_backend) {
+            Column(Modifier.selectableGroup()) {
+                TranslationBackend.entries.forEach { backend ->
+                    val enabled = !busy && (backend != TranslationBackend.HEXAGON || hexagonAvailable == true)
+                    val selected = selection.backend == backend
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(14.dp))
+                        .selectable(selected, enabled = enabled, role = Role.RadioButton,
+                            onClick = { onSelect(selection.copy(backend = backend)) }).padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected, onClick = null, enabled = enabled)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(when (backend) {
+                                TranslationBackend.VULKAN -> R.string.backend_vulkan
+                                TranslationBackend.CPU -> R.string.backend_cpu
+                                TranslationBackend.HEXAGON -> R.string.backend_hexagon
+                            }), style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(when (backend) {
+                                TranslationBackend.VULKAN -> R.string.backend_vulkan_hint
+                                TranslationBackend.CPU -> R.string.backend_cpu_hint
+                                TranslationBackend.HEXAGON -> when (hexagonAvailable) {
+                                    null -> R.string.backend_checking
+                                    false -> R.string.backend_hexagon_unavailable
+                                    true -> R.string.backend_hexagon_hint
+                                }
+                            }), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            Hint(if (busy) R.string.backend_locked else R.string.backend_scope)
         }
 
         Section(R.string.settings_overlay) {

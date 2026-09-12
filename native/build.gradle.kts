@@ -16,6 +16,7 @@ android {
     sourceSets["main"].apply {
         java.srcDir(rootProject.file("artifacts/deps/sherpa-kotlin"))
         jniLibs.srcDir(rootProject.file("artifacts/deps/sherpa-android/jniLibs"))
+        assets.srcDir(rootProject.file("artifacts/deps/hexagon/assets"))
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

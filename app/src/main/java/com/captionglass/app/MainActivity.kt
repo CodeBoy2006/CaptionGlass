@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
+import com.captionglass.nativebridge.TranslationBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -73,6 +74,7 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("selection", MODE_PRIVATE).edit {
             putString("source", value.languages.source.code).putString("target", value.languages.target.code)
             putString("recognizer", value.recognizerId).putString("translator", value.translatorId)
+            putString("backend", value.backend.id)
         }
     }
     private val projectionRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -84,7 +86,8 @@ class MainActivity : ComponentActivity() {
                     .putExtra(PlaybackCaptureService.EXTRA_SOURCE, selection.languages.source.code)
                     .putExtra(PlaybackCaptureService.EXTRA_TARGET, selection.languages.target.code)
                     .putExtra(PlaybackCaptureService.EXTRA_RECOGNIZER, selection.recognizerId)
-                    .putExtra(PlaybackCaptureService.EXTRA_TRANSLATOR, selection.translatorId))
+                    .putExtra(PlaybackCaptureService.EXTRA_TRANSLATOR, selection.translatorId)
+                    .putExtra(PlaybackCaptureService.EXTRA_BACKEND, selection.backend.id))
             } catch (_: Exception) { notice = Notice.START_REJECTED }
         } else notice = Notice.CONSENT_CANCELLED
     }
@@ -142,7 +145,8 @@ class MainActivity : ComponentActivity() {
             ModelSelection(LanguagePair(checkNotNull(Language.fromCode(preferences.getString("source", "en"))),
                 checkNotNull(Language.fromCode(preferences.getString("target", "zh")))),
                 checkNotNull(preferences.getString("recognizer", ModelSelection().recognizerId)),
-                checkNotNull(preferences.getString("translator", ModelSelection().translatorId)))
+                checkNotNull(preferences.getString("translator", ModelSelection().translatorId)),
+                checkNotNull(TranslationBackend.fromId(preferences.getString("backend", "vulkan"))))
                 .also { check(catalog.valid(it)) }
         }.getOrDefault(ModelSelection())
         authorizing = savedInstanceState?.getBoolean("authorizing") ?: false

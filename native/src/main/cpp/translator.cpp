@@ -2,6 +2,9 @@
 #include <android/log.h>
 #include <llama.h>
 #include <ggml-backend.h>
+#include <ggml-vulkan.h>
+#include <ggml-hexagon.h>
+#include <gguf.h>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -11,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 using Clock = std::chrono::steady_clock;
 static constexpr int batch_size = 8;
@@ -25,16 +29,24 @@ static bool aborted(void * data) {
 }
 struct Cancelled : std::runtime_error { Cancelled() : std::runtime_error("cancelled_or_deadline") {} };
 static void check(Call * c) { if (aborted(c)) throw Cancelled(); }
+struct BackendError : std::runtime_error { using std::runtime_error::runtime_error; };
+struct ModelUnsupported : std::runtime_error { using std::runtime_error::runtime_error; };
+static std::mutex backend_mutex;
 struct Model {
     bool usable = true;
     double clear_ms = 0;
     double prefill_ms = 0, prompt_decode_ms = 0, first_token_ms = -1, total_ms = 0;
     int prompt_tokens = 0, history_tokens = 0, cached_tokens = 0, output_tokens = 0;
     std::vector<llama_token> cached_prefix;
+    std::string backend;
     ggml_backend_dev_t devices[2]{};
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
-    ~Model() { if (ctx) llama_free(ctx); if (model) llama_model_free(model); }
+    ~Model() {
+        if (ctx) llama_free(ctx);
+        if (model) llama_model_free(model);
+        if (backend == "hexagon" && devices[0]) ggml_backend_hexagon_release_device(devices[0]);
+    }
 };
 static void decode(Model * m, llama_batch batch, Call * call) {
     const auto status = llama_decode(m->ctx, batch);
@@ -69,7 +81,10 @@ static void fail(JNIEnv * env, const std::exception & e, bool unavailable = fals
     // A callback exception must not hide the owner's obligation to discard a poisoned context.
     if (unavailable && env->ExceptionCheck()) env->ExceptionClear();
     if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass(unavailable ?
-        "com/captionglass/nativebridge/TranslationUnavailableException" : "java/lang/IllegalStateException"), e.what());
+        "com/captionglass/nativebridge/TranslationUnavailableException" :
+        dynamic_cast<const BackendError *>(&e) ? "com/captionglass/nativebridge/TranslationBackendException" :
+        dynamic_cast<const ModelUnsupported *>(&e) ? "com/captionglass/nativebridge/TranslationModelUnsupportedException" :
+        "java/lang/IllegalStateException"), e.what());
 }
 static jbyteArray output_bytes(JNIEnv * env, const std::string & output) {
     auto result = env->NewByteArray(static_cast<jsize>(output.size()));
@@ -79,7 +94,7 @@ static jbyteArray output_bytes(JNIEnv * env, const std::string & output) {
 #define JNI(name) Java_com_captionglass_nativebridge_NativeBindings_##name
 static std::string timings(Model * m) {
     const auto perf = llama_perf_context(m->ctx);
-    return "prefill_ms=" + std::to_string(m->prefill_ms) + " decode_ms=" + std::to_string(perf.t_eval_ms - m->prompt_decode_ms) +
+    return "backend=" + m->backend + " prefill_ms=" + std::to_string(m->prefill_ms) + " decode_ms=" + std::to_string(perf.t_eval_ms - m->prompt_decode_ms) +
         " clear_ms=" + std::to_string(m->clear_ms) + " first_token_ms=" + std::to_string(m->first_token_ms) +
         " total_ms=" + std::to_string(m->total_ms) + " prompt_tokens=" + std::to_string(m->prompt_tokens) +
         " history_tokens=" + std::to_string(m->history_tokens) + " cached_tokens=" + std::to_string(m->cached_tokens) +
@@ -101,7 +116,39 @@ extern "C" JNIEXPORT void JNICALL JNI(unload)(JNIEnv *, jobject, jlong m) { dele
 extern "C" JNIEXPORT jstring JNICALL JNI(timings)(JNIEnv * env, jobject, jlong model) {
     return env->NewStringUTF(timings(reinterpret_cast<Model *>(model)).c_str()); // ASCII-only diagnostics.
 }
-extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray path, jbyteArray prefix, jlong token) {
+extern "C" JNIEXPORT jboolean JNICALL JNI(hexagonAvailable)(JNIEnv *, jobject) {
+    std::lock_guard<std::mutex> lock(backend_mutex);
+    try {
+        auto reg = ggml_backend_hexagon_reg();
+        return reg && ggml_backend_reg_dev_count(reg) > 0;
+    } catch (const std::exception &) { return false; }
+}
+
+static std::string string(JNIEnv * env, jstring input) {
+    const char * chars = env->GetStringUTFChars(input, nullptr);
+    if (!chars) throw std::runtime_error("string_allocation_failed");
+    std::string result(chars);
+    env->ReleaseStringUTFChars(input, chars);
+    return result;
+}
+
+static void check_hexagon_model(const std::string & path) {
+    // Read tensor metadata only. K-quants otherwise silently put the model's matmuls on CPU.
+    auto file = std::unique_ptr<gguf_context, decltype(&gguf_free)>(
+        gguf_init_from_file(path.c_str(), {true, nullptr}), gguf_free);
+    if (!file) throw std::runtime_error("model_metadata_failed");
+    for (int64_t i = 0; i < gguf_get_n_tensors(file.get()); ++i) {
+        // Matches the pinned Hexagon MUL_MAT types; re-audit when upgrading the runtime.
+        switch (gguf_get_tensor_type(file.get(), i)) {
+            case GGML_TYPE_F32: case GGML_TYPE_F16: case GGML_TYPE_Q4_0: case GGML_TYPE_Q4_1:
+            case GGML_TYPE_Q8_0: case GGML_TYPE_IQ4_NL: case GGML_TYPE_MXFP4: break;
+            default: throw ModelUnsupported("hexagon_model_quantization_unsupported");
+        }
+    }
+}
+
+extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray path, jbyteArray prefix, jlong token,
+                                               jstring backend, jstring hexagon_directory) {
     try {
         auto * call = reinterpret_cast<Call *>(token);
         check(call);
@@ -115,28 +162,56 @@ extern "C" JNIEXPORT jlong JNICALL JNI(load)(JNIEnv * env, jobject, jbyteArray p
             llama_backend_init();
         });
         auto m = std::make_unique<Model>();
-        auto vulkan = ggml_backend_reg_by_name("Vulkan");
-        if (!vulkan || ggml_backend_reg_dev_count(vulkan) == 0)
-            throw std::runtime_error("vulkan_device_unavailable");
-        m->devices[0] = ggml_backend_reg_dev_get(vulkan, 0);
-        __android_log_print(ANDROID_LOG_INFO, "CaptionGlassNative", "MT device: %s (%s)",
-                            ggml_backend_dev_name(m->devices[0]), ggml_backend_dev_description(m->devices[0]));
+        m->backend = string(env, backend);
+        const bool cpu = m->backend == "cpu", hexagon = m->backend == "hexagon";
+        if (!cpu && !hexagon && m->backend != "vulkan") throw BackendError("unknown_backend");
+        const auto model_path = bytes(env, path);
+        if (hexagon) check_hexagon_model(model_path);
+        {
+            std::lock_guard<std::mutex> lock(backend_mutex);
+            if (!cpu) {
+                ggml_backend_reg_t reg = nullptr;
+                try {
+                    if (hexagon) {
+                        auto directory = string(env, hexagon_directory);
+                        if (directory.empty() || setenv("ADSP_LIBRARY_PATH", directory.c_str(), 1) != 0)
+                            throw BackendError("hexagon_runtime_unavailable");
+                        reg = ggml_backend_hexagon_reg();
+                    } else if (!getenv("GGML_DISABLE_VULKAN")) reg = ggml_backend_vk_reg();
+                    if (reg) ggml_backend_register(reg);
+                    if (!reg || ggml_backend_reg_dev_count(reg) == 0) throw BackendError("device_unavailable");
+                    m->devices[0] = ggml_backend_reg_dev_get(reg, 0);
+                    // Open the real DSP session before llama can swallow an initialization error.
+                    if (hexagon) {
+                        auto probe = ggml_backend_dev_init(m->devices[0], nullptr);
+                        if (!probe) throw BackendError("hexagon_session_unavailable");
+                        ggml_backend_free(probe);
+                    }
+                } catch (const std::exception & e) {
+                    __android_log_print(ANDROID_LOG_WARN, "CaptionGlassNative", "MT backend=%s unavailable: %s", m->backend.c_str(), e.what());
+                    throw BackendError(hexagon ? "hexagon_device_unavailable" : "vulkan_device_unavailable");
+                }
+            }
+        }
+        __android_log_print(ANDROID_LOG_INFO, "CaptionGlassNative", "MT backend=%s device=%s", m->backend.c_str(),
+                            cpu ? "CPU" : ggml_backend_dev_name(m->devices[0]));
         auto mp = llama_model_default_params();
+        // A non-null, empty device list prevents automatic accelerator selection in CPU mode.
         mp.devices = m->devices;
-        mp.n_gpu_layers = INT_MAX;
+        mp.n_gpu_layers = cpu ? 0 : INT_MAX;
         mp.split_mode = LLAMA_SPLIT_MODE_NONE;
-        mp.load_mode = LLAMA_LOAD_MODE_MMAP;
+        mp.load_mode = hexagon ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
         mp.progress_callback = [](float, void * c) { return !aborted(c); };
         mp.progress_callback_user_data = call;
-        m->model = llama_model_load_from_file(bytes(env, path).c_str(), mp);
+        m->model = llama_model_load_from_file(model_path.c_str(), mp);
         if (!m->model) throw std::runtime_error("model_load_failed");
         check(call);
         auto cp = llama_context_default_params();
-        // Small batches use Vulkan's vector kernels for short mobile prompts.
-        // ponytail: poll between GPU batches; in-flight GPU work cannot be preempted.
+        // Small batches bound cancellation latency and fit short subtitle prompts.
+        // ponytail: poll between accelerator batches; in-flight device work cannot be preempted.
         cp.n_ctx = 2048; cp.n_batch = batch_size; cp.n_ubatch = batch_size;
         cp.n_threads = 3; cp.n_threads_batch = 3;
-        cp.offload_kqv = true; cp.op_offload = true;
+        cp.offload_kqv = !cpu; cp.op_offload = !cpu;
         cp.no_perf = false;
         cp.abort_callback = aborted; cp.abort_callback_data = call;
         m->ctx = llama_init_from_model(m->model, cp);
@@ -172,7 +247,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
     llama_perf_context_reset(m->ctx);
     if (!m->usable) {
         report(m, began, "context_unavailable");
-        fail(env, std::runtime_error("vulkan_context_failed_restart_session"), true);
+        fail(env, std::runtime_error("translation_context_failed_restart_session"), true);
         return nullptr;
     }
     try {
@@ -290,6 +365,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL JNI(translate)(JNIEnv * env, jobject, jl
         }
         // Retain the call token and context until all submitted work has returned.
         const bool cancelled = dynamic_cast<const Cancelled *>(&e) != nullptr;
+        if (m->backend == "hexagon" && ggml_backend_hexagon_device_failed(m->devices[0])) m->usable = false;
         if (!cancelled) m->cached_prefix.clear();
         llama_set_abort_callback(m->ctx, nullptr, nullptr);
         const auto clear_start = Clock::now();

@@ -14,6 +14,9 @@ import android.provider.Settings
 import android.util.Log
 import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
+import com.captionglass.nativebridge.TranslationBackend
+import com.captionglass.nativebridge.TranslationBackendException
+import com.captionglass.nativebridge.TranslationModelUnsupportedException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,7 +47,8 @@ class PlaybackCaptureService : Service() {
             ModelSelection(LanguagePair(checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_SOURCE))),
                 checkNotNull(Language.fromCode(intent.getStringExtra(EXTRA_TARGET)))),
                 checkNotNull(intent.getStringExtra(EXTRA_RECOGNIZER)),
-                checkNotNull(intent.getStringExtra(EXTRA_TRANSLATOR))).also { check(catalog.valid(it)) }
+                checkNotNull(intent.getStringExtra(EXTRA_TRANSLATOR)),
+                checkNotNull(TranslationBackend.fromId(intent.getStringExtra(EXTRA_BACKEND)))).also { check(catalog.valid(it)) }
         }.getOrElse {
             mutableState.value = CaptureState(status = CaptureStatus.START_FAILED)
             stopSelf()
@@ -76,10 +80,15 @@ class PlaybackCaptureService : Service() {
                         catch (_: Exception) { throw CaptureFailure(CaptureStatus.PACK_INVALID) }
                     }
                     check(!stopping) { "字幕已停止" }
-                    try { pipeline.start(catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService, selection.languages.source),
+                    try { pipeline.start(applicationContext, catalog.recognizer(selection).recognizerFiles(this@PlaybackCaptureService, selection.languages.source),
                         catalog.translator(selection).file(this@PlaybackCaptureService, "model"), catalog.translator(selection).translationFormat) }
-                    catch (_: Exception) {
-                        if (!stopping) requestStop(CaptureStatus.LOAD_FAILED)
+                    catch (e: Exception) {
+                        Log.w("CaptionGlassMT", "MT load backend=${selection.backend.id} error=${e.javaClass.simpleName}")
+                        if (!stopping) requestStop(when (e) {
+                            is TranslationBackendException -> CaptureStatus.BACKEND_UNAVAILABLE
+                            is TranslationModelUnsupportedException -> CaptureStatus.BACKEND_MODEL_UNSUPPORTED
+                            else -> CaptureStatus.LOAD_FAILED
+                        })
                         return@launch
                     }
                     check(!stopping) { "字幕已停止" }
@@ -221,6 +230,7 @@ class PlaybackCaptureService : Service() {
         const val EXTRA_TARGET = "target_language"
         const val EXTRA_RECOGNIZER = "recognizer_id"
         const val EXTRA_TRANSLATOR = "translator_id"
+        const val EXTRA_BACKEND = "translation_backend"
         const val ACTION_STOP = "com.captionglass.STOP_CAPTURE"
         private val mutableState = MutableStateFlow(CaptureState())
         val state = mutableState.asStateFlow()

@@ -32,6 +32,7 @@
 | `nemotron-3.5-560ms-int8` | NVIDIA Nemotron 3.5 · 0.6B · INT8 | 0.68 GB | online-transducer |
 | `pengcheng-8lang-int8` | PengChengStarling · 八语种 · INT8 | 0.34 GB | online-transducer |
 | `hy-mt2-1.8b-q4-k-m` | Hy-MT2 1.8B · Q4_K_M | 1.13 GB | hy-mt2 |
+| `hy-mt2-1.8b-q8-0` | Hy-MT2 1.8B · Q8_0 | 1.91 GB | hy-mt2 |
 | `hy-mt2-streamrevise-v4-q4-k-m` | Hy-MT2 StreamRevise v4 · 1.8B · Q4_K_M | 1.07 GB | stream-revise |
 | `milmmt-46-1b-v1-q4-k-m` | MiLMMT-46 1B · v1.0 · Q4_K_M | 0.81 GB | milmmt |
 | `milmmt-46-4b-v1-q4-k-m` | MiLMMT-46 4B · v1.0 · Q4_K_M | 2.49 GB | milmmt |
@@ -46,9 +47,11 @@
 | `parakeet-ja-ctc-int8` | NVIDIA Parakeet 日语 CTC · 0.6B · INT8 | 0.66 GB | offline-ctc |
 | `japanese-zipformer-base-fp16` | Japanese Zipformer Base · 96.5M · FP16 | 0.20 GB | japanese-zipformer |
 
-Qwen3-ASR、Parakeet 和 Japanese Zipformer 为分段识别，CPU 单线程；约 4 秒提供可修订原文，约 8 秒窗口保留 2 秒重叠自动续接，停顿或 EOF 确认剩余尾句。所有 MT 使用 Vulkan GPU，不静默回退 CPU。Murasaki 仅开放日语→简体中文；StreamRevise 仅中英日；MiLMMT 使用其 46 语言表。ASR 语言与 MT 源/目标能力分别相交，不将识别的 30/25 种能力直接等同于所有字幕方向。
+Qwen3-ASR、Parakeet 和 Japanese Zipformer 为分段识别，CPU 单线程；约 4 秒提供可修订原文，约 8 秒窗口保留 2 秒重叠自动续接，停顿或 EOF 确认剩余尾句。MT 可在设置中选择 Vulkan GPU、CPU 或 Hexagon NPU，不自动改用其他处理器。当前 Hexagon 兼容候选为官方 Hy-MT2 Q8_0，其余已列 MT 的 Q4_K_M/Q6_K/IQ4_XS 会被明确拒绝。Murasaki 仅开放日语→简体中文；StreamRevise 仅中英日；MiLMMT 使用其 46 语言表。ASR 语言与 MT 源/目标能力分别相交，不将识别的 30/25 种能力直接等同于所有字幕方向。
 
 大参数、大量化型号是明确的按需选项，不根据设备内存猜测其速度或可持续使用能力。显示的是文件大小，不是峰值 RAM/VRAM 承诺；加载失败沿既有错误路径返回。
+
+Q8_0 与默认版本来自同一官方 revision `a0c709d9…`，完整下载后的 SHA-256 为 `5c3fe0b1408a5ceb0143184ef247b11b579c525f4b02b060e6c851bb76fef1a4`，354 个张量中 129 个 F32、225 个 Q8_0，架构为 hunyuan-dense。它是运行库支持的量化候选，不代表已经通过骁龙 NPU 真机质量与持续性能验收。
 
 ## 来源与格式核对
 

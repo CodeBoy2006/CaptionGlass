@@ -19,8 +19,24 @@ find_program(VULKAN_HOST_CXX clang++ PATHS /usr/bin /usr/local/bin REQUIRED NO_D
 configure_file(vulkan-host.cmake.in vulkan-host.cmake @ONLY)
 set(GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "${CMAKE_CURRENT_BINARY_DIR}/vulkan-host.cmake" CACHE FILEPATH "" FORCE)
 add_subdirectory(../../../../artifacts/deps/llama-source llama-build)
+# Register accelerators only when selected. CPU mode must not initialize Vulkan or FastRPC.
+get_target_property(GGML_DEFINITIONS ggml COMPILE_DEFINITIONS)
+list(REMOVE_ITEM GGML_DEFINITIONS GGML_USE_VULKAN)
+set_property(TARGET ggml PROPERTY COMPILE_DEFINITIONS "${GGML_DEFINITIONS}")
+set(HEXAGON "${DEPS}/hexagon")
+if(NOT EXISTS "${HEXAGON}/verified")
+    message(FATAL_ERROR "Run bash scripts/prepare-hexagon.sh before building (requires Docker).")
+endif()
+set(HEXAGON_SOURCE "${DEPS}/llama-source/ggml/src/ggml-hexagon")
+add_library(captionglass-hexagon STATIC
+    "${HEXAGON_SOURCE}/ggml-hexagon.cpp" "${HEXAGON_SOURCE}/htp-drv.cpp"
+    "${HEXAGON}/generated/htp_iface_stub.c")
+target_include_directories(captionglass-hexagon PRIVATE
+    "${DEPS}/llama-source/ggml/src" "${HEXAGON_SOURCE}" "${HEXAGON_SOURCE}/htp"
+    "${HEXAGON}/generated" "${HEXAGON}/include/incs" "${HEXAGON}/include/incs/stddef")
+target_link_libraries(captionglass-hexagon PRIVATE ggml-base log dl)
 target_link_libraries(ggml-vulkan PRIVATE SPIRV-Headers::SPIRV-Headers)
 add_library(captionglass SHARED translator.cpp resample.cpp "${DEPS}/sherpa-source/sherpa-onnx/csrc/resample.cc")
 target_include_directories(captionglass PRIVATE "${DEPS}/sherpa-source")
-target_link_libraries(captionglass PRIVATE llama log)
+target_link_libraries(captionglass PRIVATE llama captionglass-hexagon log)
 target_link_options(captionglass PRIVATE "-Wl,-z,max-page-size=16384")

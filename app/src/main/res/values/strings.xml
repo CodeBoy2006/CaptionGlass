@@ -61,6 +61,21 @@
     <string name="records_limit">仅保留最近 200 条</string>
 
     <string name="settings_pack">模型管理</string>
+    <string name="settings_translation_backend">翻译处理器</string>
+    <string name="backend_vulkan">GPU (Vulkan)</string>
+    <string name="backend_cpu">CPU</string>
+    <string name="backend_hexagon">NPU (Hexagon)</string>
+    <string name="backend_vulkan_hint">默认 · 使用支持 Vulkan 的图形处理器</string>
+    <string name="backend_cpu_hint">使用中央处理器，速度取决于设备与模型</string>
+    <string name="backend_hexagon_hint">实验选项 · 需兼容的骁龙设备，推荐 Hy-MT2 Q8_0</string>
+    <string name="backend_hexagon_unavailable">此设备或系统未提供受支持的 Hexagon NPU</string>
+    <string name="backend_checking">正在检查设备支持…</string>
+    <string name="backend_scope">仅影响翻译，语音识别仍使用 CPU。启动时验证所选处理器，不自动切换。</string>
+    <string name="backend_locked">请先结束当前操作或停止字幕，再切换处理器。</string>
+    <string name="status_backend_unavailable">所选翻译处理器不可用</string>
+    <string name="hint_backend_unavailable">请在设置中选择其他翻译处理器后重试。</string>
+    <string name="status_backend_model_unsupported">此模型不兼容 Hexagon</string>
+    <string name="hint_backend_model_unsupported">请选择 Hy-MT2 Q8_0，或将翻译处理器改为 GPU / CPU。</string>
     <string name="pack_ready">已就绪</string>
     <string name="pack_missing">未安装</string>
     <string name="pack_import_failed">导入失败，请检查空间与文件权限</string>

@@ -5,6 +5,7 @@ import com.captionglass.engine.Language
 import com.captionglass.engine.LanguagePair
 import com.captionglass.engine.TranslationFormat
 import com.captionglass.nativebridge.RecognizerFiles
+import com.captionglass.nativebridge.TranslationBackend
 import org.json.JSONObject
 import java.io.File
 
@@ -28,7 +29,8 @@ data class ModelSpec(val id: String, val name: String, val kind: String, val lan
 }
 
 data class ModelSelection(val languages: LanguagePair = LanguagePair(), val recognizerId: String = "x-asr-zh-en-480ms",
-                          val translatorId: String = "hy-mt2-1.8b-q4-k-m")
+                          val translatorId: String = "hy-mt2-1.8b-q4-k-m",
+                          val backend: TranslationBackend = TranslationBackend.VULKAN)
 
 /** APK-owned catalog only. Imported folders contain data, never executable configuration. */
 class ModelCatalog(context: Context) {
@@ -119,6 +121,6 @@ class ModelCatalog(context: Context) {
     fun withLanguages(selection: ModelSelection, pair: LanguagePair): ModelSelection {
         val asr = recognizers.find { it.id == selection.recognizerId && it.supports(pair) } ?: recognizers.first { it.supports(pair) }
         val mt = translators.find { it.id == selection.translatorId && it.supports(pair) } ?: translators.first { it.supports(pair) }
-        return ModelSelection(pair, asr.id, mt.id).also { require(valid(it)) }
+        return selection.copy(languages = pair, recognizerId = asr.id, translatorId = mt.id).also { require(valid(it)) }
     }
 }

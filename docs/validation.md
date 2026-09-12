@@ -1,6 +1,6 @@
 # 验收与已知限制
 
-本文保留可重复检查和按日期记录的证据。第 2 节包含旧版本行为与历史失败，不代表当前全部功能或性能；最近的连续字幕与翻译检查见 [2.10](#210-连续窗口与流式阅读) 和 [2.11](#211-翻译预填充与过载恢复)。
+本文保留可重复检查和按日期记录的证据。第 2 节包含旧版本行为与历史失败，不代表当前全部功能或性能；最近的连续字幕与翻译检查见 [2.10](#210-连续窗口与流式阅读)、[2.11](#211-翻译预填充与过载恢复) 和 [2.12](#212-可选翻译处理器)。
 
 ## 1. M1 可重复检查
 
@@ -52,6 +52,19 @@ adb -s <测试设备序列号> shell am instrument -w -r -e mode no-vulkan \
 ```
 
 vivo 的后台冻结可能在 Instrumentation 首个 Activity 启动前暂停进程。脚本在派发后显式打开目标 Activity；验收期间页面使用 `FLAG_KEEP_SCREEN_ON`，结束后解除。冻结等待不能混入模型性能。USB 安装仍遵守厂商逐次确认。
+
+#### 1.2.2 翻译处理器独立验收
+
+`backend` 只需部署指定翻译模型，不依赖 ASR 或音频夹具。默认型号是 Hy-MT2 Q4_K_M；Hexagon 成功路径使用目录中固定版本的 Q8_0。
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend cpu com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend vulkan com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend hexagon com.captionglass.app.test/com.captionglass.app.DeviceChecks
+adb -s <测试设备序列号> shell am instrument -w -r -e mode backend -e backend hexagon -e model hy-mt2-1.8b-q8-0 com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
+
+CPU 检查先禁用 Vulkan，验证明确的 GPU 不可用错误后执行真实 CPU 翻译。可用后端执行两次加载／增量翻译／卸载，并检查数字、主动取消、固定前缀复用及跨句隔离。Hexagon + Q4_K_M 必须明确拒绝量化格式；无兼容驱动的设备使用 Q8_0 必须明确拒绝设备。`PASS: backend hexagon` 可能表示预期拒绝，必须同时检查具体 PASS 行及原生日志，不能把它当作 NPU 成功推理。NPU 成功证据需要 HTP 设备、模型卸载层数和实际输出；固定短句不能替代实时音频质量或持续功耗验收。
 
 ### 1.3 实际跨应用与悬浮窗
 
@@ -321,6 +334,16 @@ JDK 17 的 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAn
 
 证据位于 ignored `artifacts/mt-profile-*-before.log`、`mt-profile-hy-after.log`、`mt-profile-hy-retained-check.log`、`mt-profile-murasaki-final.log`、`mt-retained-summary.json`、`mt-endurance-hy.log`、`mt-endurance-murasaki-mask.log`、`mt-endurance-*-summary.json`、`mt-endurance-native.log`、`mt-murasaki-mask-regression.log`、`mt-murasaki-stop-check.log`、`mt-native-retained-check.log` 和 `mt-final-build.log`。测试文本来自固定合成语音或明确的短句夹具；生产诊断仅记录身份、计数、耗时、热抽样和终态。
 
+### 2.12 可选翻译处理器
+
+2026-09-12：设置新增 GPU (Vulkan)、CPU、实验性的 NPU (Hexagon)，默认 Vulkan；选择跨进程保存，会话中锁定。ASR 仍为 CPU。NPU 使用固定 llama.cpp 的 Hexagon 后端、APK 自带 v73/v75/v79/v81 DSP 内核和系统 FastRPC 驱动；K-quants/IQ4_XS 明确拒绝，无静默整模型 CPU 回退。新增官方 Hy-MT2 Q8_0，完整下载的 SHA-256 和实际 GGUF 架构、354 个张量类型均已核对。
+
+JDK 17 下 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` 通过；APK 的 ARM64 JNI ELF 16 KB 对齐及四份 DSP assets 打包检查通过。两份 llama.cpp 补丁在干净固定源码上重新应用，结果与实际编译源文件一致。静态复核覆盖显式设备选择、CPU 不初始化 Vulkan、取消与卸载次序、DSP 错误传播及失败会话退役；实际 DSP 卡死／驱动终止失败未注入。
+
+已在用户指定的 Xiaomi Pad 8 Pro（SM8750P，Android API 36）安装应用和 Instrumentation APK。实测设置三项正常显示，Hexagon 驱动／架构检测可用，CPU 选择在强制停止并重启应用后恢复，Hexagon 选择成功保存；设备 `catalog` 检查通过。USB 大文件传输反复中断，曾改用临时本地 Wi-Fi 调试连接。用户随后明确反馈“我已验证成功，现在提交吧”，因此按用户验收结束后续自动化并提交。该反馈是用户真机确认；本次代理没有取得完整 CPU／Vulkan／Hexagon `backend` 自动化成功日志，不据此声称 NPU 性能、功耗或持续字幕质量达标。复测命令见 1.2.2。
+
+证据在 ignored `artifacts/backend-final-build.log`、`backend-tablet-catalog.log`、`backend-settings-tablet.png`、`backend-settings-cpu-restored.xml`；模型传输失败记录保留在 `backend-tablet-deploy.log`。
+
 ## 3. M2：可持续体验
 
 实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
@@ -342,4 +365,4 @@ JDK 17 的 `:engine:check :app:assembleDebug :app:lintDebug :app:assembleDebugAn
 
 ## 4. M3：经验证的扩展
 
-日语、多语种与 Vulkan MT 已提供实验性接入，仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU 设备白名单、QNN/NPU 和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。
+日语、多语种与 Vulkan MT 已提供实验性接入，Hexagon NPU 为可选实验后端，均仍需独立的长时与质量验收。长时基线通过后再评估 STQ、GPU 设备白名单、QNN／其他 NPU 和轻量配置。一次只改变一个变量，保留数字、否定、专名的准确性比较。热策略在片段边界切换并设冷却；没有已验证的替代配置时保留原文与未翻译状态，绝不隐式转云端。

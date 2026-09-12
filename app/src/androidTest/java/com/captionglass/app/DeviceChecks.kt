@@ -21,6 +21,7 @@ class DeviceChecks : Instrumentation() {
     private var requestedModel: String? = null
     private var requestedTranslator: String? = null
     private var repetitions = 4
+    private var backend = TranslationBackend.VULKAN
     private val translation get() = catalog.translator(ModelSelection())
     private val catalog by lazy { ModelCatalog(targetContext) }
     private val baseline get() = catalog.recognizer(ModelSelection())
@@ -30,6 +31,7 @@ class DeviceChecks : Instrumentation() {
         super.onCreate(arguments)
         mode = arguments?.getString("mode") ?: "all"
         requestedModel = arguments?.getString("model"); requestedTranslator = arguments?.getString("mt")
+        backend = checkNotNull(TranslationBackend.fromId(arguments?.getString("backend") ?: "vulkan"))
         repetitions = (arguments?.getString("repetitions")?.toInt() ?: 4).also { require(it in 4..512) }
         start()
     }
@@ -39,11 +41,15 @@ class DeviceChecks : Instrumentation() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
-            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity", "mt-profile"))
+            check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "backend", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity", "mt-profile"))
             report("Verifying pinned model files")
             catalogChecks()
             if (mode == "catalog") {
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: catalog\n") }); return
+            }
+            if (mode == "backend") {
+                runBlocking { backendChecks() }
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: backend ${backend.id}\n") }); return
             }
             if (mode == "mt-profile") {
                 val model = catalog.models.single { it.id == requestedModel && it.kind == "mt" }
@@ -81,7 +87,7 @@ class DeviceChecks : Instrumentation() {
                         if (model.adapter == "qwen3-asr") qwenCompletionCheck(model)
                     } else withContext(Dispatchers.Default) {
                         NativeCall(120_000).use { load ->
-                            LocalTranslator(model.file(targetContext, "model"), model.translationFormat, load).use { mt ->
+                            LocalTranslator(targetContext, model.file(targetContext, "model"), model.translationFormat, load, backend).use { mt ->
                                 NativeCall(60_000).use { call ->
                                     val text = mt.translate("今日はいい天気です。", emptyList(), LanguagePair(Language.JA, Language.ZH), call)
                                     check(text.any { it in '\u4e00'..'\u9fff' })
@@ -145,8 +151,8 @@ class DeviceChecks : Instrumentation() {
                     // Backend registration is process-wide; run this mode in its own instrumentation process.
                     android.system.Os.setenv("GGML_DISABLE_VULKAN", "1", true)
                     NativeCall(30_000).use { call ->
-                        val error = runCatching { LocalTranslator(translation.file(targetContext, "model"), translation.translationFormat, call).close() }.exceptionOrNull()
-                        check(error is IllegalStateException && error.message == "vulkan_device_unavailable") { "Unexpected missing-GPU result: $error" }
+                        val error = runCatching { LocalTranslator(targetContext, translation.file(targetContext, "model"), translation.translationFormat, call, TranslationBackend.VULKAN).close() }.exceptionOrNull()
+                        check(error is TranslationBackendException && error.message == "vulkan_device_unavailable") { "Unexpected missing-GPU result: $error" }
                     }
                     report("PASS: missing Vulkan device rejected without CPU-only fallback")
                 }
@@ -182,6 +188,54 @@ class DeviceChecks : Instrumentation() {
             runOnMainSync { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
     }
+    private suspend fun backendChecks() = withContext(Dispatchers.Default) {
+        val spec = catalog.translators.single { it.id == (requestedModel ?: translation.id) }
+        ModelPack.verify(targetContext, spec)
+        val npu = LocalTranslator.hexagonAvailable()
+        report("Hexagon driver/architecture available=$npu; requested=${backend.id}")
+        if (backend == TranslationBackend.CPU) {
+            // CPU must work even when Vulkan registration is explicitly disabled.
+            android.system.Os.setenv("GGML_DISABLE_VULKAN", "1", true)
+            NativeCall(120_000).use { call ->
+                val failure = runCatching { LocalTranslator(targetContext, spec.file(targetContext, "model"),
+                    spec.translationFormat, call, TranslationBackend.VULKAN).close() }.exceptionOrNull()
+                check(failure is TranslationBackendException)
+            }
+        }
+        if (backend == TranslationBackend.HEXAGON && (spec.id != "hy-mt2-1.8b-q8-0" || !npu)) {
+            NativeCall(120_000).use { call ->
+                val failure = runCatching { LocalTranslator(targetContext, spec.file(targetContext, "model"),
+                    spec.translationFormat, call, backend).close() }.exceptionOrNull()
+                if (spec.id != "hy-mt2-1.8b-q8-0") check(failure is TranslationModelUnsupportedException)
+                else check(failure is TranslationBackendException)
+                report("PASS: explicit Hexagon rejection ${failure?.message}; no CPU fallback")
+            }
+            return@withContext
+        }
+        repeat(2) {
+            NativeCall(120_000).use { load ->
+                LocalTranslator(targetContext, spec.file(targetContext, "model"), spec.translationFormat, load, backend).use { mt ->
+                    var streamed = false
+                    NativeCall(60_000).use { call ->
+                        val result = mt.translate("The meeting starts at three o'clock.", emptyList(), LanguagePair(), call,
+                            onProgress = { if (it.isNotBlank()) streamed = true })
+                        check(streamed && result.any { it in '\u4e00'..'\u9fff' } && Regex("三|3").containsMatchIn(result))
+                        check("backend=${backend.id} " in mt.timings())
+                        report("PASS: ${backend.id} load/translate/close cycle=$it $result ${mt.timings()}")
+                    }
+                    NativeCall(60_000).use { call ->
+                        var partial = false
+                        check(runCatching {
+                            mt.translate("Good subtitles give you time to read.", emptyList(), LanguagePair(), call,
+                                onProgress = { partial = true; call.cancel() })
+                        }.isFailure)
+                        check(partial)
+                    }
+                    prefixCacheCheck(mt, spec.translationFormat)
+                }
+            }
+        }
+    }
     /** Fixed native workload for before/after latency comparisons, not a speech-quality benchmark. */
     private suspend fun translationProfile(model: ModelSpec) = withContext(Dispatchers.Default) {
         val sources = listOf("今日はいい天気です。", "明日は公園に行きません。", "会議は午後三時に始まります。", "このアプリは音声を翻訳します。")
@@ -189,7 +243,7 @@ class DeviceChecks : Instrumentation() {
         val power = targetContext.getSystemService(android.os.PowerManager::class.java)
         val began = SystemClock.elapsedRealtime()
         NativeCall(120_000).use { load ->
-            LocalTranslator(model.file(targetContext, "model"), model.translationFormat, load).use { mt ->
+            LocalTranslator(targetContext, model.file(targetContext, "model"), model.translationFormat, load, backend).use { mt ->
                 report("PREPARE model=${model.id} ready_ms=${SystemClock.elapsedRealtime() - began}")
                 repeat(12) { index ->
                     NativeCall(30_000).use { call ->
@@ -282,6 +336,12 @@ class DeviceChecks : Instrumentation() {
 
     private fun catalogChecks() {
         val initial = ModelSelection()
+        check(TranslationBackend.entries.map { it.id }.distinct().size == 3)
+        check(TranslationBackend.fromId("unknown") == null)
+        TranslationBackend.entries.forEach { selected ->
+            check(TranslationBackend.fromId(selected.id) == selected)
+            check(catalog.withLanguages(initial.copy(backend = selected), LanguagePair(Language.JA, Language.ZH)).backend == selected)
+        }
         check(catalog.valid(initial))
         val japanese = catalog.withLanguages(initial, LanguagePair(Language.JA, Language.ZH))
         check(japanese.recognizerId == nemotron.id && catalog.valid(japanese))
@@ -304,14 +364,14 @@ class DeviceChecks : Instrumentation() {
         check(!catalog.valid(revised.copy(languages = LanguagePair(Language.EN, Language.FR))))
         check(catalog.withLanguages(revised, LanguagePair(Language.EN, Language.FR)).translatorId == initial.translatorId)
         check(catalog.families.getValue("NVIDIA Parakeet").size == 3)
-        check(catalog.families.getValue("Hy-MT2").size == 2)
+        check(catalog.families.getValue("Hy-MT2").size == 3)
         check(catalog.recognizers.filter { it.segmented }.all { model -> model.files.any { it.role == "vad" } })
         report("PASS: catalog pins, family grouping, independent ASR/MT selection and language compatibility")
     }
     private suspend fun nativeChecks() = withContext(Dispatchers.Default) {
         val began = SystemClock.elapsedRealtime()
         val load = NativeCall(120_000)
-        val model = try { LocalTranslator(translation.file(targetContext, "model"), translation.translationFormat, load) } finally { load.close() }
+        val model = try { LocalTranslator(targetContext, translation.file(targetContext, "model"), translation.translationFormat, load, backend) } finally { load.close() }
         report("MT load_ms=${SystemClock.elapsedRealtime() - began}")
         try {
             fun translate(source: String, target: Language, sourceLanguage: Language = Language.EN): String {
@@ -327,7 +387,7 @@ class DeviceChecks : Instrumentation() {
                 val result = model.translate("Good subtitles give you time to read.", emptyList(), LanguagePair(Language.EN, Language.ZH), call,
                     onProgress = { previews += it })
                 check(previews.any { it.isNotBlank() } && previews.all { '\ufffd' !in it && result.startsWith(it) })
-                report("PASS: actual Vulkan translation streamed ${previews.size} UTF-8 previews before completion: $result")
+                report("PASS: actual ${backend.id} translation streamed ${previews.size} UTF-8 previews before completion: $result")
             }
             prefixCacheCheck(model, translation.translationFormat)
             check(translate("今天天气很好，我们去公园散步。", Language.EN, Language.ZH).contains("park", ignoreCase = true))
@@ -413,7 +473,7 @@ class DeviceChecks : Instrumentation() {
         var firstTranslation = 0L
         var began = 0L
         var stopping = false
-        val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId, translatorId)
+        val selection = ModelSelection(LanguagePair(checkNotNull(Language.fromCode(name)), target), recognizerId, translatorId, backend)
         val session = CaptionSession(scope, selection) { state ->
             val elapsed = SystemClock.elapsedRealtime() - began
             if (mode == "reading" && state.confirmed > latest.confirmed)
@@ -434,7 +494,7 @@ class DeviceChecks : Instrumentation() {
         }
         try {
             if (mode == "reading") overlay.show()
-            session.start(catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator(selection).file(targetContext, "model"), catalog.translator(selection).translationFormat)
+            session.start(targetContext, catalog.recognizer(selection).recognizerFiles(targetContext, selection.languages.source), catalog.translator(selection).file(targetContext, "model"), catalog.translator(selection).translationFormat)
             val memory = android.os.Debug.MemoryInfo().also { android.os.Debug.getMemoryInfo(it) }
             report("REPLAY $name loaded_pss_kb=${memory.totalPss}")
             began = SystemClock.elapsedRealtime()

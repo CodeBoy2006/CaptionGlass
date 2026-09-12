@@ -1,6 +1,7 @@
 package com.captionglass.app
 
 import android.os.SystemClock
+import android.content.Context
 import android.util.Log
 import com.captionglass.engine.*
 import com.captionglass.nativebridge.*
@@ -13,7 +14,7 @@ import java.util.concurrent.Executors
 /** Observed capture condition. The first five describe a live session; the rest explain how one ended. */
 enum class CaptureStatus {
     IDLE, PREPARING, WAITING, HEARING, SILENT,
-    STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED,
+    STOPPED, ENDED, CONSENT_ENDED, PERMISSION_LOST, PACK_INVALID, LOAD_FAILED, BACKEND_UNAVAILABLE, BACKEND_MODEL_UNSUPPORTED,
     AUDIO_UNSUPPORTED, CAPTURE_INTERRUPTED, OVERRUN, RECOGNITION_FAILED, TRANSLATION_FAILED, START_FAILED,
 }
 
@@ -69,13 +70,13 @@ internal class CaptionSession(
     private fun now() = if (beganAt == 0L) 0L else SystemClock.elapsedRealtime() - beganAt
     private fun update(change: CaptureState.() -> CaptureState) { state = state.change(); publish(state) }
 
-    suspend fun start(asrFiles: RecognizerFiles, translationModel: File, format: TranslationFormat) {
+    suspend fun start(context: Context, asrFiles: RecognizerFiles, translationModel: File, format: TranslationFormat) {
         publish(state)
         recognizer = withContext(asrWorker) { LocalRecognizer(asrFiles) }
         check(!stopped) { "字幕已停止" }
         val call = NativeCall(120_000)
         activeCall = call
-        try { translator = withContext(mtWorker) { LocalTranslator(translationModel, format, call) } }
+        try { translator = withContext(mtWorker) { LocalTranslator(context, translationModel, format, call, selection.backend) } }
         finally { call.close(); activeCall = null }
         check(!stopped) { "字幕已停止" }
         beganAt = SystemClock.elapsedRealtime()

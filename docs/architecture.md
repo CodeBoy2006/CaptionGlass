@@ -6,7 +6,7 @@
 
 服务于外语课程、技术分享与长视频观看，优先保证可读性、内容完整性和持续性能。阅读体验是待验证的差异化假设，不声称优于竞品。
 
-- 首页以语言、字幕和运行状态表达能力，不向普通用户暴露量化、后端或线程参数；使用系统字体并支持缩放。
+- 首页以语言、字幕和运行状态表达能力，不显示量化、后端或线程参数；设置页按用户选择提供 GPU (Vulkan)、CPU、NPU (Hexagon) 三种翻译处理器；使用系统字体并支持缩放。
 - 回看只改变阅读位置，暂停停止处理，停止结束会话，三者不得共用含糊状态；暂停尚未实现。无法控制任意播放器或获取其时间轴，未来导出使用采集会话时间。
 - 不以切断否定、数字或专名来换取延迟，不用摘要替代完整字幕；确认片段必须有译文或明确未译结果。
 - 不申请通知读取、无障碍、账号、屏幕图像访问或媒体控制权限补足核心流程。仅用户主动下载模型时联网，模型包只含数据，运行库随 APK 提供。
@@ -32,7 +32,7 @@ flowchart LR
 | --- | --- |
 | `app` | Compose 三页、权限与前台服务、会话 owner、PCM 缓冲、原生 View 悬浮窗、模型下载与 SAF 导入 |
 | `engine` | 原文稳定/提交/修订、单工作器队列、有界双语记录、确定性回归检查 |
-| `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp Vulkan C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
+| `native` | 固定版本 sherpa CPU Kotlin/JNI、llama.cpp CPU/Vulkan/Hexagon C++ 翻译绑定、句柄与取消 token；依赖纯 JVM engine 的语言枚举 |
 
 `engine` 不依赖 Android、JNI、网络和推理库。测试注入时间，无需睡眠或模型。应用没有本地 HTTP 服务、Python 运行时、DI 或多后端注册框架。
 
@@ -65,7 +65,7 @@ flowchart TD
 
 停止顺序：关闭输入、停止 AudioRecord 以解除阻塞、给所有未完成确认片段发出 `STOPPED`、置 native 原子取消标记、停止接受迟到译文增量并保留已显示条目、处理已接受的 ASR 尾部、等待工作器返回、释放模型/线程/悬浮窗/projection、结束前台服务。回收完成前仍保持 busy，禁止开始第二个会话。系统撤销授权使用同一路径。读协程负责唯一一次 AudioRecord release。服务与会话以 `CaptureStatus` 发布准备、等待声音、聆听、未收到声音与各停止原因；界面将其映射为符号与短标签，不解析异常文本。
 
-Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子取消标志与 steady-clock deadline。CPU abort callback 仅覆盖 CPU 算子；Vulkan 预填充每批最多 8 tokens，每批／生成 token 前后检查取消，并等待已提交 GPU 工作同步后返回。小批次使用上游 Vulkan 的向量计算路径，降低手机短提示的预填充开销。GPU 在途工作不可抢占，这限制了每次等待的工作量，不保证挂起驱动下的硬实时截止时间。调用返回并卸下 callback 后才释放 token。清理失败使该 context 不再接受翻译；固定运行库的仓库补丁防止析构中的 Vulkan 同步异常穿过 noexcept 析构函数。超时/撤回后，队列保留 active 槽直到匹配的 completion 到达，因此不会启动孤儿翻译或并行访问 context。ASR 库没有中途终止构造/解码 API，停止需要等待正在执行的调用返回。
+Kotlin Job 取消不等于 JNI 取消。MT token 在派发前创建，含原子取消标志与 steady-clock deadline。CPU abort callback 仅覆盖 CPU 算子；各翻译后端预填充每批最多 8 tokens，每批／生成 token 前后检查取消，并等待已提交设备工作同步后返回。小批次使用上游 Vulkan 的向量计算路径，降低手机短提示的预填充开销。GPU/NPU 在途工作不可抢占，这限制了每次等待的工作量，不保证挂起驱动下的硬实时截止时间。调用返回并卸下 callback 后才释放 token。清理失败使该 context 不再接受翻译；固定运行库的仓库补丁防止析构中的 Vulkan 同步异常穿过 noexcept 析构函数。超时/撤回后，队列保留 active 槽直到匹配的 completion 到达，因此不会启动孤儿翻译或并行访问 context。ASR 库没有中途终止构造/解码 API，停止需要等待正在执行的调用返回。
 
 ### 3.2 音频与时间
 
@@ -91,7 +91,7 @@ MT 默认 1 个等待槽和 1 个 active，确认后总预算仍为 8 秒，包�
 
 同一个 MT 协程在完成后直接处理下一条未过期任务。JNI 在原有 MT worker 上每约 120 ms 回调累计 UTF-8；不完整字符和 Murasaki 思考标签不发布。Main owner 按完整 SegmentKey、active call 与终态检查更新预览；取消、超时、修订后的迟到增量被忽略。失败后的已有预览保留但标为未完成，不能当作成功译文。译文完成时原位更新对应行。模型准备阶段预计算 APK 固定提示前缀，使用加载预算而不占第一句的 8 秒预算；准备时间相应增加。成功、正常取消或超时后只保留已经准备好的固定前缀 KV，移除背景、当前原文及输出对应的序列位置；下次只复用 token 完全一致的前缀，至少重新解码一个输入 token 以获取正确 logits。其他推理异常清空全部缓存；清理失败使 context 不再可用。模型释放时一并释放，没有跨会话缓存。
 
-Vulkan 清理失败通过 `TranslationUnavailableException` 传给会话 owner；当前任务先结算终态，再以“翻译中断”停止会话、停止 AudioRecord 并等待 worker 释放。不会继续向不可用的 context 派发请求。首页未翻译计数包含积压、超时和失败。`CaptionGlassMT`／`CaptionGlassNative` 日志只记录会话和片段身份、排队、首个可见预览、首 token、预填充、总耗时、token 数及失败类型，不记录语音文字。播放捕获每 10 秒抽样系统热状态和 headroom；API 不支持时保留 NaN，不据此猜测温度或自动切换模型。
+推理上下文清理失败通过 `TranslationUnavailableException` 传给会话 owner；当前任务先结算终态，再以“翻译中断”停止会话、停止 AudioRecord 并等待 worker 释放。不会继续向不可用的 context 派发请求。首页未翻译计数包含积压、超时和失败。`CaptionGlassMT`／`CaptionGlassNative` 日志只记录会话和片段身份、排队、首个可见预览、首 token、预填充、总耗时、token 数及失败类型，不记录语音文字。播放捕获每 10 秒抽样系统热状态和 headroom；API 不支持时保留 NaN，不据此猜测温度或自动切换模型。
 
 终态为译文或 `BACKLOG / FAILED / TIMED_OUT / STOPPED / SUPERSEDED`。溢出、超时、停止返回值均被消费，确认计数与终态计数可核对。所有状态在提交时建立的原位置更新，不因完成顺序改变片段顺序。内存记录按 sequence 排序，只保留最近 200 条；计数覆盖整个会话。持久记录属于 M2。
 
@@ -116,10 +116,10 @@ Vulkan 清理失败通过 `TranslationUnavailableException` 传给会话 owner�
 | ASR | X-ASR zh/en 480 ms；sherpa-onnx v1.13.8 / `11afbd0…`；ORT 1.28.2；CPU 单线程、greedy search |
 | ASR（日语及多语新选项） | Nemotron 3.5 ASR Streaming 0.6B，560 ms；官方 sherpa INT8 encoder/decoder/joiner + tokens，revision `ab43d895…`；同一 sherpa/ORT CPU 单线程、greedy search；每条流明确设置源语言 |
 | ASR（八语种备选） | PengChengStarling 八语种 streaming Zipformer；sherpa 官方 int8 encoder/joiner + matched decoder/tokens，revision `c6726c1…`；沿用同一 sherpa/ORT CPU 单线程；modified beam search，4 条 active paths |
-| MT | Hy-MT2 1.8B Q4_K_M；llama.cpp v0.4.0 / `5266f24…` + 仓库 Vulkan 清理补丁；首个 Vulkan 设备，全部层／KV／支持的算子卸载；剩余 CPU 算子 3 线程；context 2,048、每次提交 / batch / ubatch 8 |
+| MT | Hy-MT2 1.8B Q4_K_M（默认）或官方 Q8_0；llama.cpp v0.4.0 / `5266f24…` + 仓库 Vulkan/Hexagon 补丁；GPU/NPU 显式选择设备并卸载层／KV；CPU 的设备列表为空、层卸载为 0、KV/算子卸载关闭；CPU 算子 3 线程；context 2,048、每次提交 / batch / ubatch 8 |
 | Android native | NDK 27.1.12297006、CMake 3.22.1、arm64-v8a / ARMv8-A 基线；16 KB LOAD 对齐 |
 
-sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan 后端静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。显式选择 Vulkan 设备，不支持 Vulkan 1.2、算子／分配失败时沿现有加载失败或未翻译路径反馈；不静默切回纯 CPU 翻译。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
+sherpa 源码 tar 的哈希固定在 `scripts/prepare-native.sh`，`prepare-sherpa.sh` 使用上游已固定 SHA-256 的 ORT 1.28.2 和依赖构建 JNI。同版本 Kotlin JNI 声明直接复制。Qwen 完整性补丁通过现有 stream option 报告 EOS；token 上限、上下文耗尽、重复坍塌和其他早退均不能成为成功原文。llama.cpp CPU/Vulkan/Hexagon 主机代码由同一 Android NDK 静态链接到应用 JNI 库；不集成 QNN，不下载动态后端。仅在明确选中时注册并初始化相应加速器，CPU 不初始化 Vulkan。Hexagon 的四份 DSP 库来自固定源码与工具链，随 APK assets 打包，在 MT worker 上复制至私有 no-backup 目录供 FastRPC 加载；不将 Hexagon ELF 当作 ARM64 JNI 库。Vulkan-Headers 固定 `vulkan-sdk-1.4.321.0`；shaderc v2025.3、glslang、SPIRV-Tools、共用的 SPIRV-Headers 使用 matched DEPS 和归档哈希。新版宿主 glslc 在构建时生成内嵌 shader，支持 NDK 旧版编译器缺少的协作矩阵指令；宿主工具链与 Android 目标工具链分开。Vulkan 运行库来自 Android 系统。GPU 显式选择 Vulkan 设备，NPU 显式选择 HTP 设备。驱动查询必须返回已编译的 v73/v75/v79/v81，拒绝上游对未知架构的默认猜测；设置中的支持检测不打开 DSP 会话，启动时仍需成功打开真实会话。NPU 加载前按 GGUF 实际张量类型拒绝不支持的 K-quants/IQ4_XS，不靠文件名猜测。设备不可用、模型量化不兼容分别显示可恢复提示；算子／分配失败沿加载失败或未翻译路径反馈，均不静默改用另一处理器。停止后在模型与上下文释放完毕时重置 Hexagon 设备会话，下一次重新打开。Hexagon 队列每秒等待一次，连续 5 秒无响应、读取／写入错误或 DSP 运算失败会先通过 FastRPC 终止本应用的远端 DSP 进程，再抛出异常并使上下文不可用，避免错误结果成为成功译文。若驱动无法安全终止远端进程，保留 fail-stop 保护，不释放可能仍被硬件引用的内存；此时应用进程会结束。驱动调用本身不提供硬实时保证。native 日志记录选中设备和实际卸载层数，开发验收另行输出预填充、生成和清理耗时，不能仅凭设备有 GPU 就宣称加速成功。
 
 `TranslationFormat` 按固定型号生成提示：Hy-MT2 保留原提示顺序与采样，背景仍位于翻译指令之前，仅复用两个固定角色 tokens。StreamRevise 使用作者的首段／原文历史格式与 greedy；MiLMMT 使用源、目标全名的裸 completion，不加 BOS 或聊天模板；Murasaki 使用已检查 GGUF 的 Qwen3 ChatML、简短的“仅输出完整译文”提示、已闭合思考块和 `译文：` 答案起始。Murasaki 的 greedy sampler 用现有 logit bias 屏蔽两个思考控制 token，避免在译文后继续分析；仍须正常 EOG 才成功，不因标点、换行或输出上限提前截断。角色控制符与可信系统提示单独分词，语音与历史始终 `parse_special=false`。空译文、未正常结束和未闭合思考均进入明确失败终态。JNI 用 UTF-8 byte arrays，不用 modified UTF-8 传中文。各来源、精确型号及验收范围见 [模型支持表](model-support.md)。
 
@@ -131,9 +131,9 @@ Hy-MT2 的官方支持表列出 38 个语言／文字变体代码，本次按完
 
 ### 4.1 选择与模型管理
 
-`Language` 固定模型联合语言表；能力仍由每个型号自己的源／目标集合约束。`ModelSelection` 保存语言方向、ASR ID 和 MT ID。同语方向、未知代码、不兼容组合被拒绝。更改语言时保留兼容的既有选择，否则匹配第一个兼容型号；语言选择器只提供有完整识别／翻译组合的方向。SharedPreferences 保存四项偏好；权限、SAF 回调绑定发起时的模型 ID，选择在会话和安装操作期间锁定。
+`Language` 固定模型联合语言表；能力仍由每个型号自己的源／目标集合约束。`ModelSelection` 保存语言方向、ASR ID、MT ID 和翻译后端稳定 ID（vulkan/cpu/hexagon）。同语方向、未知代码、不兼容组合被拒绝。更改语言时保留兼容的既有选择，否则匹配第一个兼容型号；语言选择器只提供有完整识别／翻译组合的方向。SharedPreferences 保存五项偏好；权限、SAF 回调绑定发起时的模型 ID，选择在会话和安装操作期间锁定。
 
-服务再次验证 Intent 中的代码和模型能力，创建不可变会话快照。通知与界面显示该快照，ASR 从清单文件角色得到路径，MT 使用固定目标语言全名生成提示词；句柄和 worker 所有权不变。
+服务再次验证 Intent 中的语言、模型、后端代码和模型能力，创建不可变会话快照。通知与界面显示该快照，ASR 从清单文件角色得到路径，MT 使用固定目标语言全名生成提示词；句柄和 worker 所有权不变。
 
 模型管理位于设置页，按 ASR／MT 分类，每系列一行，当前选择的系列优先。进入后各型号独立下载、导入、校验、选择和删除；容量和流式／分段能力直接显示，语言列表、来源、许可和文件名收进详情。更多菜单支持原地重新下载损坏模型，下载进度跨层级可见。仅稳定的模型身份、适配器、运行库和文件信息参与安装指纹，显示名称不会使安装失效。
 
@@ -161,7 +161,7 @@ Qwen3-ASR 和 Parakeet 复用固定 sherpa OfflineRecognizer；Japanese Zipforme
 
 ### 环境
 
-使用 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主 Clang（macOS Command Line Tools／Linux clang）和 Python 3。固定版本见 `gradle/libs.versions.toml` 与 Gradle wrapper；当前仅打包 arm64-v8a，最低 API 29，compile/target API 36。
+使用 JDK 17、Android SDK 36、Build Tools 35.0.0、NDK 27.1.12297006、CMake 3.22.1，以及宿主 Clang（macOS Command Line Tools／Linux clang）、Python 3 和可运行 Linux/amd64 容器的 Docker。固定版本见 `gradle/libs.versions.toml` 与 Gradle wrapper；当前仅打包 arm64-v8a，最低 API 29，compile/target API 36。
 
 先设置 `JAVA_HOME` 和 `ANDROID_HOME`。macOS 的 Homebrew JDK 与默认 SDK 路径可用：
 
@@ -179,6 +179,8 @@ bash scripts/prepare-native.sh
 ./gradlew :engine:check :app:assembleDebug :app:lintDebug
 adb -s <测试设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+Hexagon 准备使用上游 Snapdragon 工具链镜像 v0.7 的固定 digest `sha256:91714433626f0d94a926538a1e46ec43756c5b8e3262b91b95df1e812940aed1`（Hexagon SDK 6.6.0.0 / Tools 19.0.07）。`scripts/prepare-hexagon.sh` 在禁网容器中编译四种 DSP 内核并生成 FastRPC 接口；主机 C/C++ 仍由项目 NDK 27 编译，避免混用镜像中的 NDK 29 libc++。首次构建需下载镜像，后续输入未变时复用本地工件。
 
 首次准备会下载哈希固定的 native 源码、ONNX Runtime 和 Khronos 头文件，编译宿主 shaderc 及匹配依赖，并应用仓库补丁。NDK 自带旧 glslc 不支持所需协作矩阵 shader；宿主工具与 Android 目标工具链分开。sherpa JNI 从固定源码构建，LiteRT 由 Gradle 随 APK 打包。
 

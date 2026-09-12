@@ -18,6 +18,7 @@ fetch sherpa-source.tar.gz 0a8db6c55dd318f4a688faba85f7760b99a6c92e8ef8864479d41
 fetch llama-source.tar.gz 2de0d87eda4696e9f6bbd771d4c623267f4e95856cce6f99793f91522f993e43 \
   https://codeload.github.com/ggml-org/llama.cpp/tar.gz/5266f24da75dc449bd56cbed7addb9c8e4a6a73e artifacts/deps/llama-source
 patch --batch -p1 -d artifacts/deps/llama-source < scripts/patches/llama-vulkan-cleanup.patch
+patch --batch -p1 -d artifacts/deps/llama-source < scripts/patches/llama-hexagon-session.patch
 fetch vulkan-headers.tar.gz 17f8ff30fd79fb7531efcb7c78c02c17a595208d482a150f06836b0ca97ef8f2 \
   https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/vulkan-sdk-1.4.321.0 artifacts/deps/vulkan-headers
 fetch spirv-headers-shaderc.tar.gz c2225a49c3d7efa5c4f4ce4a6b42081e6ea3daca376f3353d9d7c2722d77a28a \
@@ -43,3 +44,4 @@ cmake_command="${ANDROID_HOME:?Set ANDROID_HOME}/cmake/3.22.1/bin/cmake"
   -DSHADERC_SKIP_INSTALL=OFF
 "$cmake_command" --build artifacts/deps/shaderc-build --target glslc_exe --parallel 4
 bash scripts/prepare-sherpa.sh
+bash scripts/prepare-hexagon.sh
