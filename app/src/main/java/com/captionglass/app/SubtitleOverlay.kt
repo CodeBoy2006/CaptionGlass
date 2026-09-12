@@ -33,6 +33,7 @@ import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.withClip
 import androidx.core.view.isVisible
+import com.captionglass.engine.SegmentKey
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -82,7 +83,7 @@ internal class SubtitleOverlay(private val context: Context) {
             fromDegrees = 90f; toDegrees = 90f
             setBounds(0, 0, dp(18), dp(18))
         }, null, null, null)
-        setOnClickListener { captions.followLatest() }
+        setOnClickListener { postponeCollapse(); captions.followLatest() }
     }
     private val card = CaptionCard(context, status, captions, latest)
     private val handle = HandleView(context).apply {
@@ -118,12 +119,28 @@ internal class SubtitleOverlay(private val context: Context) {
     private var originalTop = 0
     private var moved = false
     private var snapped = false
+    private var handlingTouch = false
+    private var clearedThrough: SegmentKey? = null
+    private var clearedDraft: Pair<String, String>? = null
+    private val collapse = Runnable {
+        if (!attached || card.chip) return@Runnable
+        if (handlingTouch || captions.isInteracting) {
+            postponeCollapse()
+            return@Runnable
+        }
+        // Only dismiss this surface. Session records and export snapshots retain all their content.
+        lastState.lines.lastOrNull()?.segment?.key?.let { clearedThrough = it }
+        clearedDraft = lastState.stable to lastState.provisional
+        rendered = null
+        render(lastState)
+    }
 
     init {
         card.onPlateMoved = { placeHandle() }
         card.onConfiguration = { if (attached) configurationChanged() }
         card.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> if (attached) position() }
         captions.onFollowingChanged = { updateLatest() }
+        captions.onInteraction = { postponeCollapse() }
         styleTouchMode()
     }
 
@@ -150,8 +167,10 @@ internal class SubtitleOverlay(private val context: Context) {
         loadPosition()
         handle.setOnClickListener { toggleTouch() }
         handle.setOnTouchListener { view, event ->
+            postponeCollapse()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    handlingTouch = true
                     startX = event.rawX; startY = event.rawY; originalX = x; originalTop = plateTop()
                     moved = false; snapped = false
                     handle.wake(); handle.press(true)
@@ -170,8 +189,8 @@ internal class SubtitleOverlay(private val context: Context) {
                         moveTop(originalTop + dy)
                     }
                 }
-                MotionEvent.ACTION_UP -> { handle.press(false); if (!moved) view.performClick(); savePosition(); handle.sleepLater() }
-                MotionEvent.ACTION_CANCEL -> { handle.press(false); savePosition(); handle.sleepLater() }
+                MotionEvent.ACTION_UP -> { handlingTouch = false; handle.press(false); if (!moved) view.performClick(); savePosition(); handle.sleepLater() }
+                MotionEvent.ACTION_CANCEL -> { handlingTouch = false; handle.press(false); savePosition(); handle.sleepLater() }
             }
             true
         }
@@ -204,9 +223,11 @@ internal class SubtitleOverlay(private val context: Context) {
         card.outline = outline
         styleTouchMode()
         updateLatest()
+        postponeCollapse()
     }
 
     private fun toggleTouch() {
+        postponeCollapse()
         passThrough = !passThrough
         preferences.edit { putBoolean("pass-through", passThrough) }
         bodyParams.flags = if (passThrough) bodyParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -251,6 +272,11 @@ internal class SubtitleOverlay(private val context: Context) {
             .withEndAction { latest.visibility = View.GONE }
     }
 
+    private fun postponeCollapse() {
+        main.removeCallbacks(collapse)
+        if (attached && !card.chip) main.postDelayed(collapse, IDLE_MILLIS)
+    }
+
     fun render(state: CaptureState) {
         lastState = state
         if (!attached) return
@@ -258,11 +284,26 @@ internal class SubtitleOverlay(private val context: Context) {
         if (previous != null && previous.lines == state.lines && previous.stable == state.stable &&
             previous.provisional == state.provisional && previous.status == state.status) return
         rendered = state
-        if (state.lines.isNotEmpty() || state.stable.isNotBlank() || state.provisional.isNotBlank()) {
+        val captionsChanged = previous == null || previous.lines != state.lines || previous.stable != state.stable ||
+            previous.provisional != state.provisional
+        if (clearedDraft != (state.stable to state.provisional)) clearedDraft = null
+        val visible = state.copy(
+            lines = clearedThrough?.let { cleared -> state.lines.filter {
+                it.segment.key.sessionId != cleared.sessionId || it.segment.key.sequence > cleared.sequence
+            } } ?: state.lines,
+            stable = if (clearedDraft == null) state.stable else "",
+            provisional = if (clearedDraft == null) state.provisional else "",
+        )
+        if (visible.lines.isNotEmpty() || visible.stable.isNotBlank() || visible.provisional.isNotBlank()) {
             captions.maximumHeight = minOf(dp(236), screen().height() / 3)
             if (card.chip) { card.showCaptions(); updateLatest() }
-            captions.render(state)
-        } else showStatus(state.status)
+            captions.render(visible)
+            if (captionsChanged) postponeCollapse()
+        } else {
+            main.removeCallbacks(collapse)
+            captions.render(visible)
+            showStatus(state.status)
+        }
     }
 
     /** Before any words arrive the card is a compact chip: a live symbol and a short word. */
@@ -376,6 +417,7 @@ internal class SubtitleOverlay(private val context: Context) {
     }
 
     fun close() {
+        main.removeCallbacks(collapse)
         if (!attached) return
         savePosition(); attached = false
         look.unregisterOnSharedPreferenceChangeListener(lookListener)
@@ -398,6 +440,7 @@ internal class SubtitleOverlay(private val context: Context) {
     private companion object {
         const val HANDLE_WIDTH = 96
         const val HANDLE_HEIGHT = 48
+        const val IDLE_MILLIS = 15_000L
     }
 }
 

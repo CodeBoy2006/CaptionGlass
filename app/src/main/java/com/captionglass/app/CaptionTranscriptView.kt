@@ -35,8 +35,8 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Shared by the home stage and overlay. Rows keep their identity, and every change animates each row from where it
- * was on screen: new rows roll in, streamed text settles in place, and a reader who scrolled back is left alone.
+ * Shared by the home stage and overlay. Rows keep their identity; only changed positions start a transition.
+ * Compact viewports reserve their reading area, and a reader who scrolled back is left alone.
  */
 internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     private val density = resources.displayMetrics.density
@@ -60,7 +60,9 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     /** True when the host keeps this view's bottom edge fixed on screen, as a bottom-anchored overlay does. */
     var anchoredBottom = false
     var onFollowingChanged: ((Boolean) -> Unit)? = null
+    var onInteraction: (() -> Unit)? = null
     val isFollowing get() = following
+    val isInteracting get() = touching
 
     /** The surface behind the transcript; history scrolled under the top edge fades into it. Null draws no fade. */
     var edgeColor: Int? = null
@@ -109,14 +111,17 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val mode = MeasureSpec.getMode(heightMeasureSpec)
         val height = if (mode == MeasureSpec.UNSPECIFIED) maximumHeight else minOf(maximumHeight, MeasureSpec.getSize(heightMeasureSpec))
+        // Incremental wraps and draft commits must not resize the compact card or move its anchored edge.
+        val fixed = !display.scrolls && maximumHeight != Int.MAX_VALUE
         super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height,
-            if (mode == MeasureSpec.EXACTLY) MeasureSpec.EXACTLY else MeasureSpec.AT_MOST))
+            if (mode == MeasureSpec.EXACTLY || fixed) MeasureSpec.EXACTLY else MeasureSpec.AT_MOST))
     }
 
     // Compact displays follow the newest text by themselves; gestures pass to whatever is underneath.
     override fun onInterceptTouchEvent(event: MotionEvent) = display.scrolls && super.onInterceptTouchEvent(event)
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        onInteraction?.invoke()
         if (!display.scrolls) return false
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             touching = true
@@ -142,6 +147,7 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
         super.onScrollChanged(l, t, oldl, oldt)
         if (adjusting || returning || !display.scrolls) return
+        onInteraction?.invoke()
         setFollowing(atBottom())
     }
 
@@ -198,10 +204,10 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     }
 
     /** Screen positions relative to whichever edge the host holds still, including any motion in flight. */
-    private fun snapshot(): Map<View, Float> {
+    private fun snapshot(): Map<View, Position> {
         val edge = if (anchoredBottom) height else 0
         return (0 until content.childCount).map(content::getChildAt).filter { it.isVisible }
-            .associateWith { it.top + it.translationY - scrollY - edge }
+            .associateWith { Position(it.top - scrollY - edge, it.translationY) }
     }
 
     private fun leave(row: Row, animate: Boolean) {
@@ -223,7 +229,9 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
         for (i in 0 until content.childCount) {
             val child = content.getChildAt(i)
             val before = change.before[child] ?: continue
-            val delta = before - (child.top - scrollY - edge)
+            val position = child.top - scrollY - edge
+            if (before.layout == position) continue // Let an existing transition finish on its original clock.
+            val delta = before.layout + before.translation - position
             if (abs(delta) < 0.5f && child.translationY == 0f) continue
             child.translationY = delta
             child.animate().translationY(0f).setStartDelay(0).setDuration(CaptionMotion.SETTLE).setInterpolator(CaptionMotion.enter)
@@ -290,7 +298,9 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     private fun TextView.outline(on: Boolean) =
         if (on) setShadowLayer(4 * density, 0f, density, 0xE6000000.toInt()) else setShadowLayer(0f, 0f, 0f, 0)
 
-    private inner class Pending(val before: Map<View, Float>) : ViewTreeObserver.OnPreDrawListener {
+    private data class Position(val layout: Int, val translation: Float)
+
+    private inner class Pending(val before: Map<View, Position>) : ViewTreeObserver.OnPreDrawListener {
         var observer: ViewTreeObserver? = null
         var follow = true
         var anchor: SegmentKey? = null
@@ -318,8 +328,6 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
         private var translationColor = 0
         private var sourceColor = 0
         private var tone: ValueAnimator? = null
-        private var reveal: ValueAnimator? = null
-        private var revealStart = 0
 
         init {
             orientation = VERTICAL
@@ -354,7 +362,8 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
                 }, null, null, null)
             }
             translation.isVisible = line.translation.isNotEmpty()
-            stream(before?.translation.orEmpty(), line.translation, animate)
+            // Updates arrive faster than a fade can finish. Never dim already visible characters again.
+            if (translation.text.toString() != line.translation) translation.text = line.translation
             placeholder.isVisible = unfinished && line.translation.isEmpty()
             if (placeholder.isVisible) placeholder.fraction = estimate(line.segment.source)
             if (source.text.toString() != line.segment.source) source.text = line.segment.source
@@ -373,23 +382,6 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
                     unfinished && translation.isVisible -> CaptionPalette.PROGRESS
                     else -> CaptionPalette.SOURCE
                 }, animate)
-        }
-
-        /** Appended translation fades in where it lands; earlier words never move or flash. */
-        private fun stream(old: String, new: String, animate: Boolean) {
-            if (translation.text.toString() == new) return
-            val carrying = reveal?.isRunning == true
-            reveal?.cancel()
-            if (!animate || !new.startsWith(old)) { translation.text = new; return }
-            val start = if (carrying) min(revealStart, old.length) else old.length
-            val span = FadeSpan()
-            translation.text = SpannableString(new).apply { setSpan(span, start, new.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-            revealStart = start
-            reveal = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = CaptionMotion.SHORT; interpolator = CaptionMotion.enter
-                addUpdateListener { span.alpha = it.animatedValue as Float; translation.invalidate() }
-                start()
-            }
         }
 
         /** A finished row settles from the progress tint to its final colours. */
@@ -426,6 +418,7 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
             set(value) {
                 if (field == value) return
                 field = value
+                minLines = if (value) 2 else 0
                 maxLines = if (value) 2 else Int.MAX_VALUE
                 // A bottom-gravity TextView scrolls its capped layout to the newest line.
                 gravity = (if (value) Gravity.BOTTOM else Gravity.TOP) or Gravity.START
@@ -443,7 +436,12 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
 
         fun render(stable: String, provisional: String, animate: Boolean, first: Boolean) {
             val live = stable + provisional
-            isVisible = live.isNotBlank()
+            // A compact draft keeps its two-line slot when committed, so the current translation stays put.
+            visibility = when {
+                live.isNotBlank() -> VISIBLE
+                tail && !first -> INVISIBLE
+                else -> GONE
+            }
             setPadding(0, if (first) 0 else dp(10), dp(4), dp(2))
             val shown = text.toString()
             if (live == shown && stableLength == stable.length) return

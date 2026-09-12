@@ -41,6 +41,10 @@ class DeviceChecks : Instrumentation() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
+            if (mode == "display") {
+                captionDisplayChecks()
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: display\n") }); return
+            }
             if (mode == "export") {
                 recordExportChecks(activity)
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: export\n") }); return
@@ -550,10 +554,11 @@ class DeviceChecks : Instrumentation() {
                 check(latest.lines.size == latest.history.count { it.untranslatedReason != com.captionglass.engine.UntranslatedReason.SUPERSEDED })
                 readingViewportCheck(overlay.captions, latest)
                 val retained = latest.lines
-                report("READING HOLD: completed bilingual text remains visible; scroll and font checks may run now")
+                report("READING HOLD: the overlay collapses after inactivity while session records remain")
                 delay(30_000)
                 check(latest.lines == retained && retained.isNotEmpty())
-                report("PASS: completed text retained for 30 seconds without paging or expiry")
+                check(!overlay.captions.isShown)
+                report("PASS: idle overlay collapsed; completed records retained for 30 seconds")
             }
 
         } catch (e: Throwable) {

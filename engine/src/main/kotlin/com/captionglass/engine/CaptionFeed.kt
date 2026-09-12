@@ -3,7 +3,8 @@ package com.captionglass.engine
 data class CaptionLine(val segment: Segment, val translation: String = "", val outcome: Caption? = null)
 
 /** A stable ordered transcript. Time never removes text; only completion or correction changes a row. */
-class CaptionFeed(private val capacity: Int = 200) {
+class CaptionFeed(private val capacity: Int = CAPACITY) {
+    companion object { const val CAPACITY = 1_000 }
     init { require(capacity > 0) }
     private val content = linkedMapOf<SegmentKey, CaptionLine>()
     val lines: List<CaptionLine> get() = content.values.toList()
@@ -38,7 +39,6 @@ class CaptionFeed(private val capacity: Int = 200) {
  */
 fun readingWindow(lines: List<CaptionLine>, segments: Int): List<CaptionLine> {
     require(segments > 0)
-    if (lines.size <= segments) return lines
     val unfinished = lines.indexOfFirst { it.outcome == null }
     val front = when {
         unfinished < 0 -> lines.lastIndex

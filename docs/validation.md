@@ -14,9 +14,18 @@
 adb -s <测试设备序列号> shell am instrument -w -r -e mode export com.captionglass.app.test/com.captionglass.app.DeviceChecks
 ```
 
-它检查 TXT／JSON／CSV 的多语文本、转义、公式前缀、状态与 200 条边界，并通过真实记录页和 Activity 结果回调检查导出、取消、重建后快照及写入失败；JSON 另经系统文件选择器保存并回读核对。运行前将系统文件选择器默认位置设为 Downloads，系统语言使用中文或英文。检查使用专用文本夹具，不作为语音识别或翻译质量证据。
+它检查 TXT／JSON／CSV 的多语文本、转义、公式前缀、状态与 1000 条边界，并通过真实记录页和 Activity 结果回调检查导出、取消、重建后快照及写入失败；JSON 另经系统文件选择器保存并回读核对。运行前将系统文件选择器默认位置设为 Downloads，系统语言使用中文或英文。检查使用专用文本夹具，不作为语音识别或翻译质量证据。
 
 2026-09-12，Pixel 10 Pro / API 37 的只读 AVD 上 `mode export` 通过；导出菜单与系统保存界面已截图检查。JDK 17 的核心检查、debug APK、lint 与测试 APK 构建通过；未验证第三方云文档提供器、进程被杀时的真实系统回调或存储耗尽注入。日志与截图保存在 ignored `artifacts/record-export/`。
+
+悬浮字幕的无模型显示回归使用同一 runner，需要先允许测试应用显示悬浮窗：
+
+```sh
+adb -s <测试设备序列号> shell appops set com.captionglass.app SYSTEM_ALERT_WINDOW allow
+adb -s <测试设备序列号> shell am instrument -w -r -e mode display com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
+
+2026-09-12，同一只读 AVD 复现一段模式新增临时原文时外框从 287 px 变为 384 px。修复后，一段与两段的固定阅读区域在相同更新前后均为 786 px（含外框内边距），已有行位置保持不变；检查覆盖顶部／底部锚定、120 ms 增量更新和长译文。三种模式均通过 15 秒空闲折叠、清空实际 TextView、音频时间／状态变化不续期、配置变化不恢复旧文、新片段展开及记录仍可导出。`mode export` 重新通过，边界为提交 1001 条后保留最近 1000 条；核心检查、debug APK、lint、测试 APK 构建通过。截图已检查，证据在 ignored `artifacts/caption-display/`；本轮使用文本夹具验证显示行为，未做真机实时语音或推理质量验收。
 
 ### 1.2 真实推理与实时回放
 
@@ -50,7 +59,7 @@ adb -s <测试设备序列号> shell am instrument -w -r -e mode reading com.cap
 adb -s <测试设备序列号> shell am instrument -w -r -e mode continuity -e model qwen3-asr-0.6b-int8 -e mt hy-mt2-streamrevise-v4-q4-k-m com.captionglass.app.test/com.captionglass.app.DeviceChecks
 ```
 
-`reading` 使用真实英译中输出检查回看、恢复跟随、无障碍滚动和 30 秒保留。`continuity` 默认将固定语音重复四次，以 1× 速度检查自然结束与 24 秒提前停止；可加 `-e repetitions 260` 做长回放。时间为状态发布时间，不能当作屏幕物理呈现或自然语音质量。
+`reading` 使用真实英译中输出检查回看、恢复跟随、无障碍滚动，以及空闲折叠后记录仍保留 30 秒。`continuity` 默认将固定语音重复四次，以 1× 速度检查自然结束与 24 秒提前停止；可加 `-e repetitions 260` 做长回放。时间为状态发布时间，不能当作屏幕物理呈现或自然语音质量。
 
 翻译成本对照使用 `-e mode mt-profile -e model <翻译型号 ID>`，同样四个日语短句连续调用 12 次，报告准备、首字、总耗时与 token 数。`adapter` 和 `native` 还检查固定前缀复用、跨句隔离、取消与失败后的恢复。开发诊断可用 `adb logcat -s CaptionGlassMT CaptionGlassNative`，不记录字幕内容。重复合成语音与短句成本不能替代视频并行的自然语音验收。
 
@@ -377,7 +386,7 @@ Vulkan 原路径在首句触发 `mul_mat_vec_q5_0_q8_1_f32` shader 链接失败�
 
 ## 3. M2：可持续体验
 
-当前已支持最近 200 条内存记录的 TXT／JSON／CSV 导出。后续实现用户可选的持久记录、保留周期与删除，DataStore 设置，SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
+当前已支持最近 1000 条内存记录的 TXT／JSON／CSV 导出。后续实现用户可选的持久记录、保留周期与删除，DataStore 设置，SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
 
 使用有授权的同一批样本，覆盖讲课、技术专名、中英混说、快语速、口音、背景音乐、数字和否定。至少一台主流骁龙中端、一台天玑中端和一台旗舰，同时播放视频，运行 30–60 分钟。
 

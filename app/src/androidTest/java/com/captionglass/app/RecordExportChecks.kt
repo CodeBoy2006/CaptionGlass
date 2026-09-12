@@ -84,9 +84,9 @@ internal fun Instrumentation.recordExportChecks(activity: Activity) {
         check(JSONObject(render(CaptureState(), RecordFormat.JSON)).getJSONArray("records").length() == 0)
         check(render(CaptureState(), RecordFormat.CSV).count { it == '\n' } == 1)
         val feed = CaptionFeed()
-        repeat(201) { feed.submit(Segment(SegmentKey("bounded", it.toLong()), "Row $it", it.toLong(), it + 1L)) }
+        repeat(1_001) { feed.submit(Segment(SegmentKey("bounded", it.toLong()), "Row $it", it.toLong(), it + 1L)) }
         val retained = JSONObject(render(CaptureState(lines = feed.lines), RecordFormat.JSON)).getJSONArray("records")
-        check(retained.length() == 200 && retained.getJSONObject(0).getLong("sequence") == 1L)
+        check(retained.length() == 1_000 && retained.getJSONObject(0).getLong("sequence") == 1L)
     }
 
     fun workflowChecks() {

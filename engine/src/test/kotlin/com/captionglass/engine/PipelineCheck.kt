@@ -227,11 +227,19 @@ fun main() {
     check(feed.lines.map { it.segment.key.sequence } == listOf(1L, 2L))
     feed.invalidate(setOf(segment(1).key))
     check(feed.lines.single().segment.key == segment(2).key)
+    val records = CaptionFeed()
+    repeat(1_001) { records.submit(segment(it.toLong())) }
+    check(records.lines.size == 1_000 && records.lines.first().segment.key.sequence == 1L)
+    records.complete(Caption(segment(1_000), "最新译文"))
+    check(records.lines.last().translation == "最新译文" && !records.progress(segment(0).key, "已淘汰"))
     val finished = (0..1).map { CaptionLine(segment(it.toLong()), "译$it", Caption(segment(it.toLong()), "译$it")) }
     val waiting = finished + CaptionLine(segment(2)) + CaptionLine(segment(3))
     // Compact windows keep a completed translation until the next row has text to read.
     check(readingWindow(waiting, 1).single().segment.key == segment(1).key)
     check(readingWindow(waiting, 2).map { it.segment.key.sequence } == listOf(0L, 1L))
+    check(readingWindow(listOf(finished[0], CaptionLine(segment(1))), 2) == finished.take(1))
+    check(readingWindow(listOf(CaptionLine(segment(0)), CaptionLine(segment(1))), 2).size == 1)
+    check(readingWindow(emptyList(), 2).isEmpty())
     check(readingWindow(listOf(CaptionLine(segment(0)), CaptionLine(segment(1))), 1).single().segment.key == segment(0).key)
     val streamingRow = finished + CaptionLine(segment(2), "译") + CaptionLine(segment(3))
     check(readingWindow(streamingRow, 1).single().segment.key == segment(2).key)
@@ -242,7 +250,7 @@ fun main() {
     check(readingWindow(laterBacklog + CaptionLine(segment(4), "迟", Caption(segment(4), "迟")), 1).single().segment.key == segment(2).key)
     val allDone = finished + CaptionLine(segment(2), outcome = Caption(segment(2), untranslatedReason = UntranslatedReason.FAILED))
     check(readingWindow(allDone, 1).single().segment.key == segment(2).key)
-    check(readingWindow(waiting, Int.MAX_VALUE) == waiting && runCatching { readingWindow(waiting, 0) }.isFailure)
+    check(readingWindow(waiting, Int.MAX_VALUE) == finished && runCatching { readingWindow(waiting, 0) }.isFailure)
     check(TranslationFormat.MURASAKI.preview("<thi").isEmpty())
     check(TranslationFormat.MURASAKI.preview("<think>private").isEmpty())
     check(TranslationFormat.MURASAKI.preview("<think>private</think>译文") == "译文")

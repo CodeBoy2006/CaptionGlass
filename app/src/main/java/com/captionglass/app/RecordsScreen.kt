@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.captionglass.engine.CaptionLine
+import com.captionglass.engine.CaptionFeed
 
 /** Newest caption stays anchored at the bottom; scrolling up to reread is not disturbed by new arrivals. */
 @Composable
@@ -67,7 +68,7 @@ internal fun RecordsScreen(capture: CaptureState, listState: LazyListState, expo
         LazyColumn(Modifier.fillMaxSize(), listState, PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             reverseLayout = true, verticalArrangement = Arrangement.Top) {
             items(newestFirst, key = { "${it.segment.key.sessionId}.${it.segment.key.sequence}.${it.segment.key.revision}" }) { RecordRow(it) }
-            if (capture.lines.size >= 200) item {
+            if (capture.lines.size >= CaptionFeed.CAPACITY) item {
                 Text(stringResource(R.string.records_limit), Modifier.fillMaxWidth().padding(vertical = 12.dp),
                     textAlign = TextAlign.Center, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
