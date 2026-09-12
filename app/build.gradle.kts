@@ -18,6 +18,15 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
     buildFeatures { compose = true }
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+    }
+    // Compress native libraries in standalone APKs; Android extracts them at install time.
+    packaging { jniLibs.useLegacyPackaging = true }
     sourceSets["main"].assets.srcDir(rootProject.file("models"))
     sourceSets["main"].assets.srcDir(rootProject.file("third_party"))
     sourceSets["androidTest"].assets.srcDir(rootProject.file("artifacts/fixtures/wav"))

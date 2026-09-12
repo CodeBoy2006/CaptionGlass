@@ -184,6 +184,8 @@ bash scripts/prepare-native.sh
 adb -s <测试设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+分发 APK 使用 `./gradlew :app:assembleRelease`，产物为 `app/build/outputs/apk/release/app-release-unsigned.apk`，需用自己的发布密钥签名后安装。Release 开启 R8 代码优化与资源裁剪；native 模块的 consumer rules 保留 JNI 按名称访问的 sherpa 类型、异常和翻译回调。Debug 保留调试能力，不做代码裁剪。两种 APK 均压缩原生库以减小下载包，安装时由 Android 解压，代价是安装后同时保留 APK 中的压缩副本与解压后的库；不会减少推理内存或模型下载大小。
+
 Hexagon 准备使用上游 Snapdragon 工具链镜像 v0.7 的固定 digest `sha256:91714433626f0d94a926538a1e46ec43756c5b8e3262b91b95df1e812940aed1`（Hexagon SDK 6.6.0.0 / Tools 19.0.07）。`scripts/prepare-hexagon.sh` 在禁网容器中编译四种 DSP 内核并生成 FastRPC 接口；主机 C/C++ 仍由项目 NDK 27 编译，避免混用镜像中的 NDK 29 libc++。首次构建需下载镜像，后续输入未变时复用本地工件。
 
 首次准备会下载哈希固定的 native 源码、ONNX Runtime 和 Khronos 头文件，编译宿主 shaderc 及匹配依赖，并应用仓库补丁。NDK 自带旧 glslc 不支持所需协作矩阵 shader；宿主工具与 Android 目标工具链分开。sherpa JNI 从固定源码构建，LiteRT 由 Gradle 随 APK 打包。
