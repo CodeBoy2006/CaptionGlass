@@ -8,7 +8,10 @@
 <p align="center">Android 跨应用双语字幕 · 本机识别与翻译 · 悬浮阅读与回看</p>
 
 <p align="center">
-  <img src="docs/assets/captionglass-overview.gif" width="700" alt="演示动画：选择语言与模型、开启字幕后切回播放器，悬浮字幕在画面上逐句显示译文与原文，可拖动、切换穿透、上滑回看，并可切换显示方式与外观；全程本机运行">
+  <picture>
+    <source srcset="docs/assets/captionglass-overview.webp" type="image/webp">
+    <img src="docs/assets/captionglass-overview.gif" width="700" alt="演示动画：选择语言与模型、开启字幕后切回播放器，悬浮字幕在画面上逐句显示译文与原文，可拖动、切换穿透、上滑回看，并可切换显示方式与外观；全程本机运行">
+  </picture>
 </p>
 
 CaptionGlass 为允许音频捕获的播放器叠加双语字幕。看外语课程、技术分享或长视频时，继续使用熟悉的播放应用，在同一画面里对照原文与译文。

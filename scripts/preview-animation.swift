@@ -5,6 +5,12 @@
 //   swiftc -O scripts/preview-animation.swift -o /tmp/preview-animation
 //   /tmp/preview-animation /tmp/frames                 # every frame
 //   /tmp/preview-animation /tmp/frames --at 7.4        # one frame, for iterating
+//   mkdir -p /tmp/webp-frames
+//   ffmpeg -y -framerate 20 -i /tmp/frames/f%04d.png \
+//     -vf "scale=1400:986:flags=lanczos" /tmp/webp-frames/f%04d.png
+//   img2webp -loop 0 -lossy -q 90 -d 50 /tmp/webp-frames/f*.png \
+//     -o docs/assets/captionglass-overview.webp
+//   # GIF fallback for viewers without WebP/picture support:
 //   ffmpeg -y -framerate 20 -i /tmp/frames/f%04d.png \
 //     -vf "scale=700:493:flags=lanczos,split[a][b];[a]palettegen=max_colors=180:stats_mode=diff[p];\
 //          [b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
