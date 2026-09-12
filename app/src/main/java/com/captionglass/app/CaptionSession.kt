@@ -142,7 +142,7 @@ internal class CaptionSession(
         feed.complete(caption)
         Log.i("CaptionGlassMT", "session=$id sequence=${caption.segment.key.sequence} revision=${caption.segment.key.revision} " +
             "result=${caption.untranslatedReason ?: "TRANSLATED"}")
-        // ponytail: last 200 terminal outcomes in memory; durable history/export belongs to M2.
+        // ponytail: last 200 terminal outcomes in memory; durable history belongs to M2.
         update { copy(history = (history + caption).sortedBy { it.segment.key.sequence }.takeLast(200), outcomes = outcomes + 1,
             lines = feed.lines,
             translationBacklog = translationBacklog + if (caption.untranslatedReason in listOf(

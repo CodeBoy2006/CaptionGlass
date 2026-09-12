@@ -41,6 +41,10 @@ class DeviceChecks : Instrumentation() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         runOnMainSync { activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         try {
+            if (mode == "export") {
+                recordExportChecks(activity)
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", "PASS: export\n") }); return
+            }
             check(mode in setOf("all", "catalog", "verify", "native", "no-vulkan", "backend", "multilingual", "replay", "fallback", "reading", "asr-ja", "nemotron", "models", "model-network", "adapter", "pipeline-model", "continuity", "mt-profile"))
             report("Verifying pinned model files")
             catalogChecks()

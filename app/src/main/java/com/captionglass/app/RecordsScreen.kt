@@ -6,12 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -22,22 +18,37 @@ import com.captionglass.engine.CaptionLine
 
 /** Newest caption stays anchored at the bottom; scrolling up to reread is not disturbed by new arrivals. */
 @Composable
-internal fun RecordsScreen(capture: CaptureState, listState: LazyListState) {
+internal fun RecordsScreen(capture: CaptureState, listState: LazyListState, exporting: Boolean, onExport: (RecordFormat) -> Unit) {
     val colors = MaterialTheme.colorScheme
+    var exportMenu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.tab_records), style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
-            val pending = capture.lines.count { it.outcome == null }
-            if (pending > 0) {
-                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.records_pending, pending), style = MaterialTheme.typography.labelLarge,
-                    color = colors.onSurfaceVariant)
-                Spacer(Modifier.width(14.dp))
+            Box {
+                TextButton(onClick = { exportMenu = true }, enabled = capture.lines.isNotEmpty() && !exporting) {
+                    Text(stringResource(if (exporting) R.string.records_export_busy else R.string.records_export))
+                }
+                DropdownMenu(exportMenu, onDismissRequest = { exportMenu = false }) {
+                    RecordFormat.entries.forEach { format ->
+                        DropdownMenuItem(text = { Text(format.name) }, onClick = { exportMenu = false; onExport(format) })
+                    }
+                }
             }
+        }
+        if (capture.lines.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             if (capture.confirmed > 0) Text(stringResource(R.string.records_segments, capture.confirmed),
                 style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+            val pending = capture.lines.count { it.outcome == null }
+            if (pending > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.records_pending, pending), style = MaterialTheme.typography.labelLarge,
+                        color = colors.onSurfaceVariant)
+                }
+            }
         }
         if (capture.lines.isEmpty()) {
             Column(Modifier.fillMaxSize().padding(bottom = 64.dp), verticalArrangement = Arrangement.Center,
@@ -50,6 +61,8 @@ internal fun RecordsScreen(capture: CaptureState, listState: LazyListState) {
             }
             return@Column
         }
+        Text(stringResource(R.string.records_export_scope), Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
         val newestFirst = remember(capture.lines) { capture.lines.asReversed() }
         LazyColumn(Modifier.fillMaxSize(), listState, PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             reverseLayout = true, verticalArrangement = Arrangement.Top) {

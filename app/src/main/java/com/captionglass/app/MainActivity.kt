@@ -37,6 +37,7 @@ import com.captionglass.engine.LanguagePair
 import com.captionglass.nativebridge.TranslationBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 /** Transient permission outcomes. Session outcomes live in [CaptureStatus]. */
 private enum class Notice(val text: Int, val opensSettings: Boolean = false) {
@@ -61,6 +62,7 @@ class MainActivity : ComponentActivity() {
     private var authorizing by mutableStateOf(false)
     private var selection by mutableStateOf(ModelSelection())
     private var pendingImport by mutableStateOf<String?>(null)
+    private var exportOwner = UUID.randomUUID().toString()
     private var display by mutableStateOf(CaptionDisplay.SCROLL)
     private var style by mutableStateOf(CaptionStyle.PLATE)
     private lateinit var catalog: ModelCatalog
@@ -104,6 +106,15 @@ class MainActivity : ComponentActivity() {
         pendingImport = null
         if (uri != null && model != null) ModelPack.import(applicationContext, model, uri)
     }
+    private val exportDocument = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data?.data == null) RecordExport.launchFailed()
+        else RecordExport.save(applicationContext, result.data?.data.takeIf { result.resultCode == Activity.RESULT_OK }, exportOwner)
+    }
+    private fun export(format: RecordFormat) {
+        val intent = RecordExport.prepare(PlaybackCaptureService.state.value, format, exportOwner) ?: return
+        try { exportDocument.launch(intent) }
+        catch (_: Exception) { RecordExport.launchFailed() }
+    }
     private fun import(model: ModelSpec) {
         if (authorizing || pendingImport != null || ModelPack.busy || PlaybackCaptureService.state.value.active) return
         pendingImport = model.id
@@ -135,7 +146,12 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("authorizing", authorizing)
         outState.putString("pendingImport", pendingImport)
+        outState.putString("exportOwner", exportOwner)
         super.onSaveInstanceState(outState)
+    }
+    override fun onDestroy() {
+        if (isFinishing) RecordExport.abandon(exportOwner)
+        super.onDestroy()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,6 +167,7 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(ModelSelection())
         authorizing = savedInstanceState?.getBoolean("authorizing") ?: false
         pendingImport = savedInstanceState?.getString("pendingImport")
+        exportOwner = savedInstanceState?.getString("exportOwner") ?: exportOwner
         display = CaptionPreferences.display(this)
         style = CaptionPreferences.style(this)
         ModelPack.recover(applicationContext, catalog.models)
@@ -175,6 +192,13 @@ class MainActivity : ComponentActivity() {
                 var tab by rememberSaveable { mutableIntStateOf(0) }
                 val records = rememberLazyListState()
                 val snackbar = remember { SnackbarHostState() }
+                val exportMessage = RecordExport.message
+                LaunchedEffect(exportMessage) {
+                    if (exportMessage != null) {
+                        snackbar.showSnackbar(getString(exportMessage))
+                        RecordExport.dismiss()
+                    }
+                }
                 val current = notice
                 val message = current?.let { stringResource(it.text) }
                 val settingsLabel = stringResource(R.string.action_open_settings)
@@ -218,7 +242,7 @@ class MainActivity : ComponentActivity() {
                                         onSelect = ::select, onStart = ::start, onStop = ::stop,
                                         onManageModels = { tab = Destination.SETTINGS.ordinal }, onOpenRecords = { tab = Destination.RECORDS.ordinal },
                                         onOverlaySettings = { startActivity(overlaySettings()) }, display = display)
-                                    Destination.RECORDS -> RecordsScreen(capture, records)
+                                    Destination.RECORDS -> RecordsScreen(capture, records, RecordExport.busy, ::export)
                                     Destination.SETTINGS -> SettingsScreen(pack, catalog, selected, localModels, availableBytes,
                                         capture.active || choosing || pack.busy, overlayAllowed, onImport = ::import, onSelect = ::select,
                                         onDownload = { if (!authorizing && pendingImport == null) ModelPack.download(applicationContext, it) },

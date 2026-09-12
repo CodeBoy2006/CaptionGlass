@@ -8,6 +8,16 @@
 
 环境准备和 `:engine:check :app:assembleDebug :app:lintDebug` 命令统一见[构建说明](architecture.md#6-构建与开发)。`PipelineCheck.kt` 是单个可执行检查，覆盖稳定前缀、重复 revision、缩写/小数/否定尾部、源修订恢复、上下文预算、队列上限、错 session/revision、超时与停止、取消后保留 active 槽及 1,000 个确认片段完整性。连续窗口检查覆盖样本完整、重复语句接缝、500 窗口状态退役与跨窗口修正；阅读检查覆盖流式结果身份、终态、撤回和未完成预览保留。原生滚动和字体重排在设备上检查。
 
+记录导出使用独立的无模型平台 Instrumentation 检查，安装 debug APK 和测试 APK 后运行：
+
+```sh
+adb -s <测试设备序列号> shell am instrument -w -r -e mode export com.captionglass.app.test/com.captionglass.app.DeviceChecks
+```
+
+它检查 TXT／JSON／CSV 的多语文本、转义、公式前缀、状态与 200 条边界，并通过真实记录页和 Activity 结果回调检查导出、取消、重建后快照及写入失败；JSON 另经系统文件选择器保存并回读核对。运行前将系统文件选择器默认位置设为 Downloads，系统语言使用中文或英文。检查使用专用文本夹具，不作为语音识别或翻译质量证据。
+
+2026-09-12，Pixel 10 Pro / API 37 的只读 AVD 上 `mode export` 通过；导出菜单与系统保存界面已截图检查。JDK 17 的核心检查、debug APK、lint 与测试 APK 构建通过；未验证第三方云文档提供器、进程被杀时的真实系统回调或存储耗尽注入。日志与截图保存在 ignored `artifacts/record-export/`。
+
 ### 1.2 真实推理与实时回放
 
 ```sh
@@ -367,7 +377,7 @@ Vulkan 原路径在首句触发 `mul_mat_vec_q5_0_q8_1_f32` shader 链接失败�
 
 ## 3. M2：可持续体验
 
-实现用户可选的 Room 记录、保留周期与删除，DataStore 设置，TXT/SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
+当前已支持最近 200 条内存记录的 TXT／JSON／CSV 导出。后续实现用户可选的持久记录、保留周期与删除，DataStore 设置，SRT/VTT 导出，相关术语，跨进程断点续传与后台任务恢复。会话时间轴与源视频时间轴明确区分，存储失败不能导致无限内存缓存。
 
 使用有授权的同一批样本，覆盖讲课、技术专名、中英混说、快语速、口音、背景音乐、数字和否定。至少一台主流骁龙中端、一台天玑中端和一台旗舰，同时播放视频，运行 30–60 分钟。
 
