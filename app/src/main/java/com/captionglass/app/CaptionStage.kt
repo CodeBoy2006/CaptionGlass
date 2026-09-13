@@ -39,7 +39,8 @@ private val Warning = Color(CaptionPalette.WARNING)
 
 /** Uses the same transcript and display choice as the floating window. */
 @Composable
-internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, display: CaptionDisplay, modifier: Modifier = Modifier) {
+internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, display: CaptionDisplay, size: CaptionSize,
+                          modifier: Modifier = Modifier) {
     val stage = LocalStage.current
     Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = stage,
         border = if (isSystemInDarkTheme()) BorderStroke(1.dp, Translation.copy(alpha = 0.07f)) else null) {
@@ -47,10 +48,12 @@ internal fun CaptionStage(capture: CaptureState, languages: LanguagePair, displa
             StatusBadge(capture)
             Spacer(Modifier.height(14.dp))
             if (capture.lines.isNotEmpty() || capture.stable.isNotBlank() || capture.provisional.isNotBlank()) {
-                AndroidView(factory = { CaptionTranscriptView(it) }, modifier = Modifier.fillMaxWidth().height(240.dp),
+                // The reading area grows with the text, so every size keeps about the same number of lines.
+                AndroidView(factory = { CaptionTranscriptView(it) }, modifier = Modifier.fillMaxWidth().height(240.dp * size.scale),
                     update = {
                         it.edgeColor = stage.toArgb()
                         it.display = display
+                        it.scale = size.scale
                         it.render(capture)
                     })
             } else Column(Modifier.fillMaxWidth().height(160.dp), verticalArrangement = Arrangement.Center) {

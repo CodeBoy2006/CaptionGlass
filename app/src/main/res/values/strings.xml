@@ -115,6 +115,15 @@
     <string name="style_outline">描边</string>
     <string name="style_plate_hint">深色底板，白色幻灯片和暗场上都清楚。</string>
     <string name="style_outline_hint">去掉底板只留文字阴影，遮挡最少；亮色画面上可能不易看清。</string>
+    <string name="size_title">字幕字号</string>
+    <string name="size_glyph">字</string>
+    <string name="size_small">小</string>
+    <string name="size_standard">标准</string>
+    <string name="size_large">大</string>
+    <string name="size_huge">特大</string>
+    <string name="size_hint">同时放大译文与原文；悬浮窗的阅读区随之变高，最多占屏幕三分之一。</string>
+    <string name="size_preview_translation">这行是译文的实际字号</string>
+    <string name="size_preview_source">This line shows the source size.</string>
     <string name="settings_privacy">隐私</string>
     <string name="privacy_network">本地推理</string>
     <string name="privacy_microphone">不用麦克风</string>

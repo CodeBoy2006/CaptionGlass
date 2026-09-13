@@ -65,10 +65,12 @@ class MainActivity : ComponentActivity() {
     private var exportOwner = UUID.randomUUID().toString()
     private var display by mutableStateOf(CaptionDisplay.SCROLL)
     private var style by mutableStateOf(CaptionStyle.PLATE)
+    private var size by mutableStateOf(CaptionSize.STANDARD)
     private lateinit var catalog: ModelCatalog
     // The running overlay listens to the same preferences and restyles itself immediately.
     private fun chooseDisplay(value: CaptionDisplay) { display = value; CaptionPreferences.save(this, value) }
     private fun chooseStyle(value: CaptionStyle) { style = value; CaptionPreferences.save(this, value) }
+    private fun chooseSize(value: CaptionSize) { size = value; CaptionPreferences.save(this, value) }
     private fun select(value: ModelSelection) {
         if (authorizing || pendingImport != null || ModelPack.busy || PlaybackCaptureService.state.value.active) return
         require(catalog.valid(value))
@@ -170,6 +172,7 @@ class MainActivity : ComponentActivity() {
         exportOwner = savedInstanceState?.getString("exportOwner") ?: exportOwner
         display = CaptionPreferences.display(this)
         style = CaptionPreferences.style(this)
+        size = CaptionPreferences.size(this)
         ModelPack.recover(applicationContext, catalog.models)
         enableEdgeToEdge()
         setContent {
@@ -241,15 +244,15 @@ class MainActivity : ComponentActivity() {
                                     Destination.CAPTIONS -> HomeScreen(capture, pack, missing, overlayAllowed, selected, choosing, catalog, installed,
                                         onSelect = ::select, onStart = ::start, onStop = ::stop,
                                         onManageModels = { tab = Destination.SETTINGS.ordinal }, onOpenRecords = { tab = Destination.RECORDS.ordinal },
-                                        onOverlaySettings = { startActivity(overlaySettings()) }, display = display)
+                                        onOverlaySettings = { startActivity(overlaySettings()) }, display = display, size = size)
                                     Destination.RECORDS -> RecordsScreen(capture, records, RecordExport.busy, ::export)
                                     Destination.SETTINGS -> SettingsScreen(pack, catalog, selected, localModels, availableBytes,
                                         capture.active || choosing || pack.busy, overlayAllowed, onImport = ::import, onSelect = ::select,
                                         onDownload = { if (!authorizing && pendingImport == null) ModelPack.download(applicationContext, it) },
                                         onCheck = { if (!authorizing && pendingImport == null) ModelPack.recheck(applicationContext, it) },
                                         onRemove = { if (!authorizing && pendingImport == null) ModelPack.remove(applicationContext, it) },
-                                        onOverlaySettings = { startActivity(overlaySettings()) }, display = display, style = style,
-                                        onDisplay = ::chooseDisplay, onStyle = ::chooseStyle)
+                                        onOverlaySettings = { startActivity(overlaySettings()) }, display = display, style = style, size = size,
+                                        onDisplay = ::chooseDisplay, onStyle = ::chooseStyle, onSize = ::chooseSize)
                                 }
                             }
                         }

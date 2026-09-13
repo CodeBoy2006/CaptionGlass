@@ -101,7 +101,7 @@ internal class SubtitleOverlay(private val context: Context) {
     }
     private val handleParams = parameters().apply { width = dp(HANDLE_WIDTH); height = dp(HANDLE_HEIGHT) }
     private val lookListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == CaptionPreferences.DISPLAY || key == CaptionPreferences.STYLE) applyLook()
+        if (key == CaptionPreferences.DISPLAY || key == CaptionPreferences.STYLE || key == CaptionPreferences.SIZE) applyLook()
     }
     private var attached = false
     private var x = 0
@@ -217,6 +217,8 @@ internal class SubtitleOverlay(private val context: Context) {
 
     private fun applyLook() {
         captions.display = CaptionPreferences.display(context)
+        captions.scale = CaptionPreferences.size(context).scale
+        captions.maximumHeight = readingHeight()
         val outline = CaptionPreferences.style(context) == CaptionStyle.OUTLINE
         captions.outlined = outline
         captions.edgeColor = if (outline) null else CaptionPalette.PLATE_TOP
@@ -295,7 +297,7 @@ internal class SubtitleOverlay(private val context: Context) {
             provisional = if (clearedDraft == null) state.provisional else "",
         )
         if (visible.lines.isNotEmpty() || visible.stable.isNotBlank() || visible.provisional.isNotBlank()) {
-            captions.maximumHeight = minOf(dp(236), screen().height() / 3)
+            captions.maximumHeight = readingHeight()
             if (card.chip) { card.showCaptions(); updateLatest() }
             captions.render(visible)
             if (captionsChanged) postponeCollapse()
@@ -305,6 +307,9 @@ internal class SubtitleOverlay(private val context: Context) {
             showStatus(state.status)
         }
     }
+
+    /** Room for about four reading lines at the chosen caption size, and never more than a third of the screen. */
+    private fun readingHeight() = minOf((dp(236) * captions.scale).roundToInt(), screen().height() / 3)
 
     /** Before any words arrive the card is a compact chip: a live symbol and a short word. */
     private fun showStatus(value: CaptureStatus) {

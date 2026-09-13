@@ -35,7 +35,7 @@ internal fun HomeScreen(
     capture: CaptureState, pack: PackState, missing: ModelSpec?, overlayAllowed: Boolean,
     selection: ModelSelection, authorizing: Boolean, catalog: ModelCatalog, installed: Set<String>,
     onSelect: (ModelSelection) -> Unit, onStart: () -> Unit, onStop: () -> Unit, onManageModels: () -> Unit,
-    onOpenRecords: () -> Unit, onOverlaySettings: () -> Unit, display: CaptionDisplay,
+    onOpenRecords: () -> Unit, onOverlaySettings: () -> Unit, display: CaptionDisplay, size: CaptionSize,
 ) {
     val busy = capture.active || authorizing || pack.busy
     val direction = @Composable { SelectionControls(selection, catalog, installed, enabled = !busy, onSelect, onManageModels) }
@@ -47,7 +47,7 @@ internal fun HomeScreen(
             // Wide: the stage reads on the left; everything you operate sits together on the right.
             Row(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-                    Header(); CaptionStage(capture, selection.languages, display); signals()
+                    Header(); CaptionStage(capture, selection.languages, display, size); signals()
                 }
                 Column(Modifier.width(320.dp).verticalScroll(rememberScrollState()).heightIn(min = viewport).padding(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
@@ -58,7 +58,7 @@ internal fun HomeScreen(
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Header(); CaptionStage(capture, selection.languages, display)
+                    Header(); CaptionStage(capture, selection.languages, display, size)
                     Spacer(Modifier.height(12.dp)); direction(); signals()
                 }
                 Column(Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 16.dp),

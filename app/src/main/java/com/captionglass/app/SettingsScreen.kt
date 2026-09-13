@@ -4,6 +4,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,15 +24,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.captionglass.nativebridge.LocalTranslator
 import com.captionglass.nativebridge.TranslationBackend
 import kotlinx.coroutines.Dispatchers
@@ -45,8 +53,8 @@ private val Accent = Color(CaptionPalette.ACCENT)
 internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: ModelSelection, localModels: Map<String, InstalledModel>, availableBytes: Long?,
                             busy: Boolean, overlayAllowed: Boolean, onImport: (ModelSpec) -> Unit, onSelect: (ModelSelection) -> Unit,
                             onDownload: (ModelSpec) -> Unit, onCheck: (ModelSpec) -> Unit, onRemove: (ModelSpec) -> Unit,
-                            onOverlaySettings: () -> Unit, display: CaptionDisplay, style: CaptionStyle,
-                            onDisplay: (CaptionDisplay) -> Unit, onStyle: (CaptionStyle) -> Unit) {
+                            onOverlaySettings: () -> Unit, display: CaptionDisplay, style: CaptionStyle, size: CaptionSize,
+                            onDisplay: (CaptionDisplay) -> Unit, onStyle: (CaptionStyle) -> Unit, onSize: (CaptionSize) -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     val hexagonAvailable by produceState<Boolean?>(null) {
@@ -143,6 +151,15 @@ internal fun SettingsScreen(pack: PackState, catalog: ModelCatalog, selection: M
                 }
             }
             Hint(style.hint)
+
+            Label(R.string.size_title)
+            Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CaptionSize.entries.forEach { step ->
+                    Choice(size == step, step.label, { onSize(step) }, Modifier.weight(1f)) { SizeGlyph(step) }
+                }
+            }
+            SizePreview(size, style)
+            Hint(R.string.size_hint)
 
             Label(R.string.overlay_touch)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -270,6 +287,40 @@ private fun StylePreview(style: CaptionStyle) {
             .padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Bar(0.9f, 5.dp, Translation, outlined = !plate)
             Bar(0.6f, 3.dp, Source, outlined = !plate)
+        }
+    }
+}
+
+/** The step's own multiplier applied to a single glyph, so the four tiles read as one scale. */
+@Composable
+private fun SizeGlyph(step: CaptionSize) {
+    Box(Modifier.fillMaxWidth().height(46.dp).background(Plate, RoundedCornerShape(10.dp))
+        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+        Text(stringResource(R.string.size_glyph), style = TextStyle(fontSize = (15 * step.scale).sp, fontWeight = FontWeight.Medium),
+            color = Translation, maxLines = 1)
+    }
+}
+
+/**
+ * Sample caption text at exactly the sizes the caption surfaces use, in the chosen style, so the effect is
+ * readable here rather than only after starting a session.
+ */
+@Composable
+private fun SizePreview(size: CaptionSize, style: CaptionStyle) {
+    val density = LocalDensity.current.density
+    val scale by animateFloatAsState(size.scale, tween(220), label = "size")
+    val plate = style == CaptionStyle.PLATE
+    val inner = RoundedCornerShape(10.dp)
+    val shadow = if (plate) null else Shadow(Color.Black.copy(alpha = 0.9f), Offset(0f, density), 4 * density)
+    // A dark scene stands in for video, so the plate-less style previews where it is meant to be read.
+    Box(Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF0B1216)).padding(10.dp)) {
+        Column(Modifier.fillMaxWidth().then(if (plate) Modifier.background(Plate, inner)
+            .border(1.dp, Color.White.copy(alpha = 0.14f), inner) else Modifier).padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(stringResource(R.string.size_preview_translation),
+                style = TextStyle(fontSize = (20 * scale).sp, lineHeight = (28 * scale).sp, fontWeight = FontWeight.Medium, shadow = shadow),
+                color = Translation)
+            Text(stringResource(R.string.size_preview_source), Modifier.padding(top = 4.dp),
+                style = TextStyle(fontSize = (15 * scale).sp, lineHeight = (21 * scale).sp, shadow = shadow), color = Source)
         }
     }
 }

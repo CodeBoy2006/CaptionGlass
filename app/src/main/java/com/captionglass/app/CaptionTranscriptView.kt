@@ -42,6 +42,14 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     private val density = resources.displayMetrics.density
     private fun dp(value: Int) = (value * density).toInt()
     private fun sp(value: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value, resources.displayMetrics)
+    /** Multiplies every caption text size. Declared before the rows so their first measurement already uses it. */
+    var scale = 1f
+        set(value) {
+            val clamped = value.coerceIn(0.6f, 2f)
+            if (field == clamped) return
+            field = clamped
+            reflow()
+        }
     private val medium = Typeface.create(Typeface.DEFAULT, 500, false)
     private val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
     private val rows = linkedMapOf<SegmentKey, Row>()
@@ -291,8 +299,8 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
     }
 
     private fun TextView.size(size: Float, line: Float) {
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
-        setLineHeight(sp(line).roundToInt())
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, size * scale)
+        setLineHeight(sp(line * scale).roundToInt())
     }
 
     private fun TextView.outline(on: Boolean) =
@@ -341,7 +349,7 @@ internal class CaptionTranscriptView(context: Context) : ScrollView(context) {
             tag.size(13f, 20f)
             translation.size(20f, 28f)
             source.size(if (promoted) 18f else 15f, if (promoted) 26f else 21f)
-            placeholder.lineHeight = sp(28f).roundToInt()
+            placeholder.lineHeight = sp(28f * scale).roundToInt()
         }
 
         fun restyle() {
